@@ -1,9 +1,10 @@
-name: Publish Docker Image
+name: Test and publish
 
 on:
   push:
     branches:
       - main
+  pull_request:
 
 permissions:
   contents: read
@@ -24,6 +25,7 @@ jobs:
 
   build-and-push:
     needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
