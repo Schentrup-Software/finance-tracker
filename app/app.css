@@ -1,0 +1,161 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Look and feel from Schentrup-Software/toddler-games: pastel fills with a deeper
+   edge colour, a rounded font, chunky cards that sit on a solid "ledge" shadow
+   and press down when tapped. Any element picks a hue with .c-<name>, which
+   sets --c (fill) and --cd (edge). */
+@layer base {
+  :root {
+    --bg: #fff7ee;
+    --ink: #6a5d7b;
+    --ink-rgb: 106, 93, 123;
+
+    --coral: #ffb8b8;   --coral-deep: #f08f8f;
+    --peach: #ffd3a8;   --peach-deep: #f2ae72;
+    --butter: #fff1a6;  --butter-deep: #ebcb5a;
+    --mint: #beebc8;    --mint-deep: #86ce9a;
+    --aqua: #b4e9e6;    --aqua-deep: #7ccdc8;
+    --sky: #bbdcff;     --sky-deep: #86b8f0;
+    --lilac: #d8c8f8;   --lilac-deep: #ae98e4;
+    --pink: #ffc9e3;    --pink-deep: #f29cc4;
+
+    --c: #ffffff;
+    --cd: rgba(var(--ink-rgb), .14);
+
+    color-scheme: light;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    min-height: 100vh;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at 6% 4%, rgba(255, 201, 227, .7) 0, rgba(255, 201, 227, 0) 22rem),
+      radial-gradient(circle at 96% 10%, rgba(187, 220, 255, .7) 0, rgba(187, 220, 255, 0) 24rem),
+      radial-gradient(circle at 84% 98%, rgba(190, 235, 200, .7) 0, rgba(190, 235, 200, 0) 24rem),
+      radial-gradient(circle at 10% 96%, rgba(255, 241, 166, .7) 0, rgba(255, 241, 166, 0) 22rem),
+      var(--bg);
+  }
+
+  :focus-visible {
+    outline: 4px solid var(--ink);
+    outline-offset: 3px;
+  }
+
+  input, select, textarea, button { font: inherit; color: inherit; }
+}
+
+@layer components {
+  .c-coral  { --c: var(--coral);  --cd: var(--coral-deep); }
+  .c-peach  { --c: var(--peach);  --cd: var(--peach-deep); }
+  .c-butter { --c: var(--butter); --cd: var(--butter-deep); }
+  .c-mint   { --c: var(--mint);   --cd: var(--mint-deep); }
+  .c-aqua   { --c: var(--aqua);   --cd: var(--aqua-deep); }
+  .c-sky    { --c: var(--sky);    --cd: var(--sky-deep); }
+  .c-lilac  { --c: var(--lilac);  --cd: var(--lilac-deep); }
+  .c-pink   { --c: var(--pink);   --cd: var(--pink-deep); }
+  .c-white  { --c: #ffffff;       --cd: rgba(var(--ink-rgb), .14); }
+
+  /* A chunky card on a solid ledge. */
+  .chunk {
+    background: var(--c);
+    border-radius: 32px;
+    box-shadow: 0 8px 0 var(--cd), 0 18px 28px rgba(var(--ink-rgb), .12);
+  }
+
+  .chunk-press {
+    transition: transform .12s ease-out, box-shadow .12s ease-out;
+    cursor: pointer;
+  }
+  .chunk-press:active {
+    transform: translateY(6px);
+    box-shadow: 0 2px 0 var(--cd), 0 8px 14px rgba(var(--ink-rgb), .12);
+  }
+
+  .pop-in {
+    animation: pop-in .45s cubic-bezier(.3, 1.4, .6, 1) both;
+    animation-delay: calc(var(--i, 0) * 50ms);
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-3 font-extrabold;
+    background: var(--c);
+    box-shadow: 0 5px 0 var(--cd);
+    transition: transform .1s ease-out, box-shadow .1s ease-out, filter .1s;
+  }
+  .btn:hover { filter: brightness(1.03); }
+  .btn:active { transform: translateY(4px); box-shadow: 0 1px 0 var(--cd); }
+  .btn:disabled { opacity: .55; pointer-events: none; }
+  .btn-sm { @apply px-4 py-2 text-sm; box-shadow: 0 4px 0 var(--cd); }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 font-bold;
+    background: rgba(255, 255, 255, .6);
+  }
+  .btn-ghost:hover { background: rgba(255, 255, 255, .95); }
+
+  .round-btn {
+    @apply inline-flex h-12 w-12 flex-none items-center justify-center rounded-full;
+    background: rgba(255, 255, 255, .88);
+    box-shadow: 0 4px 0 rgba(var(--ink-rgb), .16);
+    transition: transform .1s ease-out, box-shadow .1s ease-out;
+  }
+  .round-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 rgba(var(--ink-rgb), .16); }
+  .round-btn svg {
+    width: 24px; height: 24px;
+    fill: none; stroke: currentColor; stroke-width: 2.4;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+
+  .field-label { @apply mb-1 block text-sm font-extrabold; }
+  .input {
+    @apply w-full rounded-2xl border-0 bg-white px-4 py-3 font-semibold;
+    box-shadow: inset 0 0 0 3px rgba(var(--ink-rgb), .12);
+    outline: none;
+  }
+  .input:focus { box-shadow: inset 0 0 0 3px var(--lilac-deep); }
+  .input::placeholder { color: rgba(var(--ink-rgb), .45); }
+
+  .pill {
+    @apply inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-extrabold;
+    background: var(--c);
+  }
+
+  .meter {
+    @apply h-4 w-full overflow-hidden rounded-full;
+    background: rgba(var(--ink-rgb), .1);
+  }
+  .meter > span {
+    @apply block h-full rounded-full;
+    background: var(--cd);
+    transition: width .5s cubic-bezier(.3, 1.3, .6, 1);
+  }
+
+  .tray {
+    border-radius: 32px;
+    background: rgba(255, 255, 255, .72);
+    box-shadow: inset 0 0 0 4px rgba(var(--ink-rgb), .07);
+  }
+
+  .num { font-variant-numeric: tabular-nums; }
+}
+
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(18px) scale(.94); }
+}
+
+@keyframes bob {
+  from { transform: translateY(-3px) rotate(-1.5deg); }
+  to   { transform: translateY(3px) rotate(1.5deg); }
+}
+
+.bob { animation: bob 3.2s ease-in-out infinite alternate; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pop-in, .bob { animation: none; }
+}
