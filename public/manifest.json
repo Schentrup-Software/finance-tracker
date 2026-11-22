@@ -1,0 +1,9 @@
+{
+  "name": "Finance Tracker",
+  "short_name": "Finances",
+  "start_url": "/budget",
+  "display": "standalone",
+  "background_color": "#fff7ee",
+  "theme_color": "#fff7ee",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

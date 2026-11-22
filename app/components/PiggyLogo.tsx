@@ -1,0 +1,20 @@
+/** The app's mascot: a round pastel piggy bank. Same art as public/icon.svg. */
+export function PiggyLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 100 100" className={className} aria-hidden="true">
+      <circle cx="50" cy="50" r="48" fill="#ffc9e3" />
+      <g strokeLinejoin="round" strokeWidth="3.5">
+        <ellipse cx="50" cy="56" rx="30" ry="23" fill="#ffb8d6" stroke="#f29cc4" />
+        <path d="M58 37 65 24 71 39Z" fill="#ffb8d6" stroke="#f29cc4" />
+        <rect x="42" y="31" width="16" height="5" rx="2.5" fill="#6a5d7b" stroke="none" />
+        <ellipse cx="78" cy="58" rx="7" ry="8" fill="#ffc9e3" stroke="#f29cc4" />
+        <rect x="31" y="72" width="9" height="10" rx="3" fill="#ffb8d6" stroke="#f29cc4" />
+        <rect x="58" y="72" width="9" height="10" rx="3" fill="#ffb8d6" stroke="#f29cc4" />
+      </g>
+      <circle cx="76" cy="57" r="1.6" fill="#6a5d7b" />
+      <circle cx="80" cy="60" r="1.6" fill="#6a5d7b" />
+      <circle cx="60" cy="50" r="3.2" fill="#6a5d7b" />
+      <path d="M22 56q-6 -2 -5 -8" fill="none" stroke="#f29cc4" strokeWidth="3.5" strokeLinecap="round" />
+    </svg>
+  );
+}
