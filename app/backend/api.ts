@@ -108,41 +108,29 @@ export interface MonthData {
   envelopes: Envelope[];
   allocations: Allocation[];
   transactions: Transaction[];
-  /** Per envelope: money carried in from earlier months (rollover envelopes only). */
+  /** Per envelope: money carried in from earlier months (rollover and annual envelopes). */
   carried: Record<string, number>;
+  /** Per envelope: spent so far this calendar year, through the end of the month. */
+  yearSpent: Record<string, number>;
 }
 
 export async function loadMonth(month: string): Promise<MonthData> {
   const { start, end } = monthRange(month);
-  const [envelopes, budgets, transactions] = await Promise.all([
+  const [envelopes, budgets, transactions, balances] = await Promise.all([
     list<Envelope>("envelopes", { sort: "sort,created" }),
     list<Budget>("budgets", { filter: pb.filter("month = {:m}", { m: month }) }),
     list<Transaction>("transactions", {
       filter: pb.filter("date >= {:s} && date < {:e}", { s: start, e: end }),
       sort: "-date,-created",
     }),
+    pb.send<{ carried: Record<string, number>; year_spent: Record<string, number> }>(
+      `/api/finance/balances?month=${month}`, { method: "GET" }),
   ]);
   const budget = budgets[0] ?? null;
   const allocations = budget
     ? await list<Allocation>("allocations", { filter: pb.filter("budget = {:b}", { b: budget.id }) })
     : [];
-
-  // Rollover (sinking fund) envelopes keep what was left in earlier months.
-  const carried: Record<string, number> = {};
-  if (envelopes.some((e) => e.rollover)) {
-    const [pastAlloc, pastSpent] = await Promise.all([
-      list<Allocation>("allocations", {
-        filter: pb.filter("envelope.rollover = true && budget.month < {:m}", { m: month }),
-      }),
-      list<Transaction>("transactions", {
-        filter: pb.filter("kind = 'expense' && envelope.rollover = true && date < {:s}", { s: start }),
-      }),
-    ]);
-    for (const a of pastAlloc) carried[a.envelope] = (carried[a.envelope] ?? 0) + a.amount;
-    for (const t of pastSpent) carried[t.envelope] = (carried[t.envelope] ?? 0) - t.amount;
-  }
-
-  return { budget, envelopes, allocations, transactions, carried };
+  return { budget, envelopes, allocations, transactions, carried: balances.carried, yearSpent: balances.year_spent };
 }
 
 /**
@@ -164,7 +152,8 @@ export async function startMonth(month: string, plannedIncome?: number): Promise
     month,
     planned_income: plannedIncome ?? last?.planned_income ?? 0,
   });
-  const fromLast = new Map(lastAlloc.map((a) => [a.envelope, a.amount]));
+  // An imported month's allocations are transfers, not a plan: start from the usual amounts.
+  const fromLast = new Map<string, number>(last?.imported ? [] : lastAlloc.map((a) => [a.envelope, Math.max(0, a.amount)]));
   await Promise.all(
     envelopes.map((e) =>
       create<Allocation>("allocations", {
@@ -192,6 +181,31 @@ export async function setAllocation(budgetId: string, envelopeId: string, amount
 export const createEnvelope = (d: Draft<Envelope>) => create<Envelope>("envelopes", d);
 export const updateEnvelope = (id: string, d: Draft<Envelope>) => update<Envelope>("envelopes", id, d);
 export const deleteEnvelope = (id: string) => remove("envelopes", id);
+
+// ---------- Import ----------
+
+/** Upserts records by external_id through the sync endpoint, in batches of 500. */
+export async function syncRecords(collection: "envelopes" | "transactions", records: object[], onProgress?: (done: number) => void) {
+  let done = 0;
+  for (let i = 0; i < records.length; i += 500) {
+    const batch = records.slice(i, i + 500);
+    await pb.send(`/api/sync/${collection}`, { method: "POST", body: { records: batch } });
+    done += batch.length;
+    onProgress?.(done);
+  }
+}
+
+export interface ImportMonth {
+  month: string;
+  planned_income: number;
+  allocations: { envelope_external_id: string; amount: number }[];
+}
+
+export function importBudgets(months: ImportMonth[]) {
+  return pb.send<{ budgets_created: number; allocations: number }>("/api/import/budgets", { method: "POST", body: { months } });
+}
+
+export const listEnvelopes = () => list<Envelope>("envelopes", { sort: "sort,created" });
 
 export const createTransaction = (d: Draft<Transaction>) => create<Transaction>("transactions", d);
 export const updateTransaction = (id: string, d: Draft<Transaction>) => update<Transaction>("transactions", id, d);

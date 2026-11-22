@@ -26,6 +26,13 @@ export interface Envelope extends BaseRecord {
   rollover: boolean;
   sort: number;
   archived: boolean;
+  /** "annual" envelopes save toward a yearly goal and always keep their leftovers. */
+  period: "" | "monthly" | "annual";
+  /** Yearly target for annual envelopes. */
+  goal: number;
+  /** Cash in the envelope at the end of opening_date (set by an import). Balances count from here. */
+  opening_balance: number;
+  opening_date: string;
   external_id: string;
 }
 
@@ -33,6 +40,8 @@ export interface Budget extends BaseRecord {
   month: string; // YYYY-MM
   planned_income: number;
   notes: string;
+  /** Came from an import: its allocations are transfers, not a plan to copy forward. */
+  imported: boolean;
 }
 
 export interface Allocation extends BaseRecord {
@@ -54,6 +63,8 @@ export interface Transaction extends BaseRecord {
   amount: number;
   payee: string;
   note: string;
+  /** Bank or card account, as text. */
+  account: string;
   external_id: string;
 }
 

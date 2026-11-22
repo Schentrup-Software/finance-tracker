@@ -2,6 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 
 const PAYSTUB_PDF = fileURLToPath(new URL("./fixtures/paystub.pdf", import.meta.url));
+const HISTORY_CSV = fileURLToPath(new URL("./fixtures/history.csv", import.meta.url));
 
 const EMAIL = "joey@example.test";
 const PASSWORD = "envelopes123";
@@ -188,4 +189,38 @@ test("paychecks: read a PDF paystub, then match the next paycheck to the cent", 
   await page.getByRole("link", { name: /Debts/ }).click();
   await expect(page.getByText("$5,757.72")).toBeVisible();
   await expect(page.getByText("From paycheck")).toBeVisible();
+});
+
+test("import history from a spreadsheet, with annual envelopes", async ({ page }) => {
+  await signIn(page);
+  await page.getByRole("button", { name: /Import history from a spreadsheet/ }).click();
+  const d = page.getByRole("dialog");
+  await d.getByLabel("History file").setInputFiles(HISTORY_CSV);
+  await expect(d.getByText(/^11 transactions/)).toBeVisible();
+  await expect(d.getByText(/2 account transfers and card payments skipped/)).toBeVisible();
+  await expect(d.getByText("already in the app", { exact: false })).toBeVisible(); // Groceries
+
+  await d.getByRole("radiogroup", { name: "Extra type", exact: true }).getByRole("radio", { name: "Annual" }).click();
+  await d.getByRole("radiogroup", { name: "Christmas type", exact: true }).getByRole("radio", { name: "Annual" }).click();
+  await d.getByLabel("Christmas yearly goal", { exact: true }).fill("3600");
+  await d.getByLabel("Christmas balance", { exact: true }).fill("4210");
+  await d.getByLabel("Extra balance", { exact: true }).fill("573.74");
+  await d.getByLabel("Vacation monthly amount", { exact: true }).fill("500");
+  await d.getByLabel("Vacation balance", { exact: true }).fill("391.04");
+  await shot(page, "08-import-preview");
+  await d.getByRole("button", { name: "Import 11 transactions" }).click();
+  await expect(d.getByText(/Imported 11 transactions/)).toBeVisible();
+  await d.getByRole("button", { name: "Done" }).click();
+
+  // The month view shows the Annual section with the balances entered.
+  const annual = page.getByRole("region", { name: "Annual" });
+  await expect(annual.getByRole("button", { name: /Christmas: \$4,210 left of \$3,600/ })).toBeVisible();
+  await expect(annual.getByRole("button", { name: /Extra: \$573\.74 left/ })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Monthly" }).getByRole("button", { name: /Vacation: \$391\.04 left/ })).toBeVisible();
+  await expect(page.getByText("Delta Air Lines")).toBeVisible();
+  await shot(page, "09-annual-envelopes");
+
+  // Before the import's balances, a month shows what each envelope spent.
+  await page.getByRole("button", { name: "Previous month" }).click();
+  await expect(page.getByRole("button", { name: /Groceries: \$160 spent/ })).toBeVisible();
 });

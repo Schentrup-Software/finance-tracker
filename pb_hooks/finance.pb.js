@@ -195,3 +195,20 @@ routerAdd(
   },
   $apis.requireAuth("users"),
 );
+
+// ---------- Envelope balances and import ----------
+
+// GET /api/finance/balances?month=YYYY-MM -> { carried: {envelopeId: n}, year_spent: {envelopeId: n} }
+routerAdd("GET", "/api/finance/balances", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  const month = e.request.url.query().get("month") || "";
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new BadRequestError("Pass ?month=YYYY-MM.");
+  return e.json(200, lib.envelopeBalances(e.app, e.auth.id, month));
+}, $apis.requireAuth("users"));
+
+// POST /api/import/budgets  { "months": [ { month, planned_income, allocations: [ { envelope_external_id, amount } ] } ] }
+routerAdd("POST", "/api/import/budgets", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  const body = e.requestInfo().body || {};
+  return e.json(200, lib.importBudgets(e.app, e.auth.id, body.months));
+}, $apis.requireAuth("users"), $apis.bodyLimit(5 << 20));

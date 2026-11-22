@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Allocation, Envelope, Transaction } from "~/backend/types";
-import { summarize } from "~/lib/budget";
+import { monthlyToGoal, summarize } from "~/lib/budget";
 import { interestLeft, paidShare, payoffMonths } from "~/lib/debts";
 import { equity, netWorth, groupFor } from "~/lib/assets";
 import { nextMonth, monthRange } from "~/lib/dates";
@@ -9,12 +9,44 @@ import { parseMoney } from "~/lib/money";
 const base = { owner: "u", created: "", updated: "" };
 const env = (id: string, extra: Partial<Envelope> = {}): Envelope => ({
   ...base, id, name: id, group: "", color: "", emoji: "", default_amount: 0, rollover: false, sort: 0,
-  archived: false, external_id: "", ...extra,
+  archived: false, external_id: "", period: "", goal: 0, opening_balance: 0, opening_date: "", ...extra,
 });
 const alloc = (envelope: string, amount: number): Allocation => ({ ...base, id: envelope + "a", budget: "b", envelope, amount });
 const tx = (envelope: string, amount: number, kind: Transaction["kind"] = "expense"): Transaction => ({
-  ...base, id: Math.random().toString(), kind, envelope, amount, date: "2026-11-05", payee: "", note: "", external_id: "",
+  ...base, id: Math.random().toString(), kind, envelope, amount, date: "2026-11-05", payee: "", note: "", account: "", external_id: "",
   earner: "", paystub_status: "",
+});
+
+describe("annual envelopes and imports", () => {
+  it("measures an annual envelope against its yearly goal and keeps what's left", () => {
+    const s = summarize([env("xmas", { period: "annual", goal: 3600 })], [alloc("xmas", 300)], [tx("xmas", 100)],
+      { xmas: 1200 }, 0, "2026-11", { xmas: 900 });
+    const x = s.envelopes[0];
+    expect(x.left).toBe(1400);
+    expect(x.fullness).toBeCloseTo(1400 / 3600);
+    expect(x.yearSpent).toBe(900);
+  });
+
+  it("money put straight into an envelope adds to it and isn't counted as income", () => {
+    const s = summarize([env("joey")], [alloc("joey", 100)], [tx("joey", 30), tx("joey", 50, "income"), tx("", 2000, "income")], {}, 0);
+    expect(s.envelopes[0].added).toBe(50);
+    expect(s.envelopes[0].left).toBe(120);
+    expect(s.receivedIncome).toBe(2000);
+  });
+
+  it("months before an imported opening balance show spending only", () => {
+    const e = env("g", { rollover: true, opening_balance: 164.22, opening_date: "2026-11-22 23:59:59.999Z" });
+    expect(summarize([e], [], [tx("g", 40)], { g: -30000 }, 0, "2026-10").envelopes[0].historyOnly).toBe(true);
+    const nov = summarize([e], [], [], { g: 164.22 }, 0, "2026-11").envelopes[0];
+    expect(nov.historyOnly).toBe(false);
+    expect(nov.left).toBe(164.22);
+  });
+
+  it("spreads what's left of a goal over the rest of the year", () => {
+    expect(monthlyToGoal(3600, 600, "2026-01")).toBe(250);
+    expect(monthlyToGoal(3600, 3000, "2026-11")).toBe(300);
+    expect(monthlyToGoal(3600, 4000, "2026-11")).toBe(0);
+  });
 });
 
 describe("cash envelope budget", () => {

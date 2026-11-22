@@ -454,7 +454,144 @@ function readPaystubWithAgent(base64, filename, mediaType) {
   }
 }
 
+// ---------- Envelope balances ----------
+
+function monthStart(month) {
+  return month + "-01 00:00:00.000Z";
+}
+
+/**
+ * Cash carried into `month` (YYYY-MM) for each of the owner's envelopes that
+ * keeps its leftovers (rollover, or annual), plus what each envelope spent so
+ * far in that calendar year (through the end of the month).
+ *
+ * An envelope with an opening balance counts from that point: earlier fills
+ * are unknown after an import, so older activity is left out of its balance.
+ */
+function envelopeBalances(app, ownerId, month) {
+  const start = monthStart(month);
+  const yearStart = month.slice(0, 4) + "-01-01 00:00:00.000Z";
+  const next = Number(month.slice(5, 7)) === 12
+    ? (Number(month.slice(0, 4)) + 1) + "-01"
+    : month.slice(0, 4) + "-" + String(Number(month.slice(5, 7)) + 1).padStart(2, "0");
+  const end = monthStart(next);
+
+  const envs = arrayOf(new DynamicModel({ id: "", rollover: false, period: "", opening_balance: -0, opening_date: "" }));
+  app.db().newQuery(
+    "SELECT id, rollover, period, opening_balance, opening_date FROM envelopes WHERE owner = {:o}",
+  ).bind({ o: ownerId }).all(envs);
+
+  const allocs = arrayOf(new DynamicModel({ envelope: "", month: "", total: -0 }));
+  app.db().newQuery(
+    "SELECT a.envelope AS envelope, b.month AS month, SUM(a.amount) AS total FROM allocations a " +
+    "JOIN budgets b ON b.id = a.budget WHERE b.owner = {:o} GROUP BY a.envelope, b.month",
+  ).bind({ o: ownerId }).all(allocs);
+
+  // Money in (+) and out (-) of each envelope, per day.
+  const moves = arrayOf(new DynamicModel({ envelope: "", date: "", total: -0, spent: -0 }));
+  app.db().newQuery(
+    "SELECT envelope, date, SUM(CASE WHEN kind = 'income' THEN amount ELSE -amount END) AS total, " +
+    "SUM(CASE WHEN kind = 'expense' THEN amount ELSE 0 END) AS spent " +
+    "FROM transactions WHERE owner = {:o} AND envelope != '' GROUP BY envelope, date",
+  ).bind({ o: ownerId }).all(moves);
+
+  const byEnvAlloc = {};
+  for (const a of allocs) (byEnvAlloc[a.envelope] = byEnvAlloc[a.envelope] || []).push(a);
+  const byEnvMove = {};
+  for (const m of moves) (byEnvMove[m.envelope] = byEnvMove[m.envelope] || []).push(m);
+
+  const carried = {};
+  const yearSpent = {};
+  for (const env of envs) {
+    const a = byEnvAlloc[env.id] || [];
+    const m = byEnvMove[env.id] || [];
+    let spent = 0;
+    for (const x of m) if (x.date >= yearStart && x.date < end) spent += x.spent;
+    yearSpent[env.id] = Math.round(spent * 100) / 100;
+
+    if (!env.rollover && env.period !== "annual") continue;
+    let total = 0;
+    const o = env.opening_date;
+    if (!o) {
+      for (const x of a) if (x.month < month) total += x.total;
+      for (const x of m) if (x.date < start) total += x.total;
+    } else if (o < start) {
+      // Opening balance, plus everything after it and before this month.
+      total = env.opening_balance;
+      for (const x of a) if (monthStart(x.month) > o && x.month < month) total += x.total;
+      for (const x of m) if (x.date > o && x.date < start) total += x.total;
+    } else {
+      // The opening is inside (or after) this month: back out what this month
+      // added before it, so the month ends at the opening balance plus what came after.
+      total = env.opening_balance;
+      for (const x of a) if (x.month >= month && monthStart(x.month) <= o) total -= x.total;
+      for (const x of m) if (x.date >= start && x.date <= o) total -= x.total;
+    }
+    carried[env.id] = Math.round(total * 100) / 100;
+  }
+  return { carried: carried, year_spent: yearSpent };
+}
+
+// ---------- Importing budget months ----------
+
+/**
+ * Creates or updates months of the owner's budget from an import:
+ *   [{ month: "2026-11", planned_income: 5000, allocations: [{ envelope_external_id, amount }] }]
+ * New months are marked imported. Each listed allocation replaces that envelope's
+ * amount for the month (envelope transfers can make it negative).
+ */
+function importBudgets(app, ownerId, months) {
+  if (!Array.isArray(months) || months.length === 0) throw badRequest("Send { \"months\": [ ... ] }.");
+  if (months.length > 240) throw badRequest("Send at most 240 months per request.");
+  const result = { budgets_created: 0, allocations: 0 };
+
+  app.runInTransaction((tx) => {
+    const budgets = tx.findCollectionByNameOrId("budgets");
+    const allocations = tx.findCollectionByNameOrId("allocations");
+    months.forEach((item, index) => {
+      const month = item && String(item.month || "");
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw badRequest("Month " + index + " needs a month like 2026-11.");
+      let budget = null;
+      try {
+        budget = tx.findFirstRecordByFilter("budgets", "owner = {:o} && month = {:m}", { o: ownerId, m: month });
+      } catch (_) {}
+      if (!budget) {
+        budget = new Record(budgets);
+        budget.set("owner", ownerId);
+        budget.set("month", month);
+        budget.set("imported", true);
+        budget.set("planned_income", Math.max(0, Number(item.planned_income) || 0));
+        tx.save(budget);
+        result.budgets_created++;
+      } else if (!budget.getFloat("planned_income") && item.planned_income > 0) {
+        budget.set("planned_income", Number(item.planned_income));
+        tx.save(budget);
+      }
+
+      for (const a of item.allocations || []) {
+        const env = findByExternalId(tx, "envelopes", ownerId, String(a.envelope_external_id || ""));
+        if (!env) throw badRequest("envelopes with external_id '" + a.envelope_external_id + "' was not found.");
+        let rec = null;
+        try {
+          rec = tx.findFirstRecordByFilter("allocations", "budget = {:b} && envelope = {:e}", { b: budget.id, e: env.id });
+        } catch (_) {}
+        if (!rec) {
+          rec = new Record(allocations);
+          rec.set("owner", ownerId);
+          rec.set("budget", budget.id);
+          rec.set("envelope", env.id);
+        }
+        rec.set("amount", Math.round((Number(a.amount) || 0) * 100) / 100);
+        tx.save(rec);
+        result.allocations++;
+      }
+    });
+  });
+  return result;
+}
+
 module.exports = {
+  envelopeBalances, importBudgets,
   agentConfig, readPaystubWithAgent, adjustAssetValue, payDateOf,
   OWNED, SYNCABLE, upsert, adjustDebtBalance,
   setPaystubStatus, reconcilePaycheck, attachPaystub, detachPaystub, syncLinePayment, removeLinePayment,

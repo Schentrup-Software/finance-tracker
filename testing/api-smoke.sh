@@ -100,5 +100,21 @@ OS=$(j -H "$OTHER" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\"
 check "another user can't feed my HSA" "$(j -H "$OTHER" -X POST "$B/api/collections/paystub_lines/records" -d "{\"paystub\":\"$OS\",\"category\":\"hsa\",\"amount\":1,\"asset\":\"$HSA\"}" | field '["status"]')" "400"
 check "my HSA is untouched" "$(value_of "$HSA")" "1000"
 
+# Annual envelopes, imported months and opening balances
+carried_of() { j -H "$A" "$B/api/finance/balances?month=$1" | field "[\"carried\"][\"$2\"]"; }
+XMAS=$(j -H "$A" -X POST "$B/api/sync/envelopes" -d '{"records":[{"external_id":"imp-xmas","name":"Christmas","period":"annual","goal":3600,"rollover":true,"opening_balance":500,"opening_date":"2026-11-10 23:59:59.999Z"}]}' | field '["records"][0]["id"]')
+check "import creates months" "$(j -H "$A" -X POST "$B/api/import/budgets" -d '{"months":[{"month":"2031-11","planned_income":100,"allocations":[{"envelope_external_id":"imp-xmas","amount":-50}]},{"month":"2031-12","allocations":[{"envelope_external_id":"imp-xmas","amount":300}]}]}' | field '["budgets_created"]')" "2"
+j -H "$A" -X PATCH "$B/api/collections/envelopes/records/$XMAS" -d '{"opening_date":"2031-11-10 23:59:59.999Z"}' > /dev/null
+j -H "$A" -X POST "$B/api/sync/transactions" -d '{"records":[{"external_id":"imp-1","kind":"expense","envelope_external_id":"imp-xmas","amount":20.5,"date":"2031-11-05 12:00:00.000Z","account":"Visa"},{"external_id":"imp-2","kind":"expense","envelope_external_id":"imp-xmas","amount":30,"date":"2031-11-15 12:00:00.000Z"},{"external_id":"imp-3","kind":"income","envelope_external_id":"imp-xmas","amount":10.25,"date":"2031-11-16 12:00:00.000Z"}]}' > /dev/null
+check "opening month backs out what came before it" "$(carried_of 2031-11 "$XMAS")" "570.5"
+check "next month starts from the opening balance" "$(carried_of 2031-12 "$XMAS")" "480.25"
+check "and carries the month's allocation on" "$(carried_of 2032-01 "$XMAS")" "780.25"
+check "spent this year counts spending only" "$(j -H "$A" "$B/api/finance/balances?month=2031-12" | field "[\"year_spent\"][\"$XMAS\"]")" "50.5"
+check "importing the same month again doesn't duplicate it" "$(j -H "$A" -X POST "$B/api/import/budgets" -d '{"months":[{"month":"2031-12","allocations":[{"envelope_external_id":"imp-xmas","amount":300}]}]}' | field '["budgets_created"]')" "0"
+check "an imported month is marked imported" "$(j -H "$A" "$B/api/collections/budgets/records?filter=month='2031-11'" | field '["items"][0]["imported"]')" "True"
+check "another user can't import into my envelopes" "$(j -H "$OTHER" -X POST "$B/api/import/budgets" -d '{"months":[{"month":"2031-11","allocations":[{"envelope_external_id":"imp-xmas","amount":1}]}]}' | field '["status"]')" "400"
+check "another user doesn't see my balances" "$(j -H "$OTHER" "$B/api/finance/balances?month=2031-12" | field '["carried"]')" "{}"
+check "balances need a sign-in" "$(j "$B/api/finance/balances?month=2031-12" | field '["status"]')" "401"
+
 echo
 [ "$FAILS" -eq 0 ] && echo "All API checks passed." || { echo "$FAILS check(s) failed."; exit 1; }

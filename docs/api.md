@@ -186,6 +186,34 @@ Its default file limit is 5 MB (`gateway.http.endpoints.responses.files.maxBytes
 `application/pdf` is allowed by default. Keep the gateway on your private network: its
 token grants full operator access.
 
+## Envelope balances and importing history
+
+`GET /api/finance/balances?month=YYYY-MM` returns, for each envelope, the cash carried into
+that month and what it has spent so far that year:
+
+```json
+{ "carried": { "<envelope id>": 3210 }, "year_spent": { "<envelope id>": 1471.92 } }
+```
+
+Only rollover and annual envelopes carry cash. An envelope with an `opening_date` counts
+from its `opening_balance`: activity before that date is left out of its balance.
+
+The app's **Import history** screen reads a CSV export (like Goodbudget's) in the browser,
+then saves it with three calls you can also use from n8n:
+
+1. `POST /api/sync/envelopes` for the envelopes (external ids `import-env-<name>`).
+2. `POST /api/import/budgets` for each month's income and envelope transfers:
+
+   ```json
+   { "months": [ { "month": "2026-11", "planned_income": 6442.63,
+       "allocations": [ { "envelope_external_id": "import-env-christmas", "amount": 1000 } ] } ] }
+   ```
+
+   A month that doesn't exist yet is created with `imported: true`. Each allocation listed
+   replaces that envelope's amount for the month. At most 240 months per call.
+3. `POST /api/sync/transactions` for the transactions. Each row's external id is a hash of
+   its contents, so importing the same file again updates instead of duplicating.
+
 ## 3. Standard PocketBase endpoints
 
 Each collection also has the usual PocketBase CRUD API:
@@ -230,6 +258,10 @@ Every collection also has `id`, `owner` (user id), `created` and `updated`.
 | `rollover` | bool | Sinking fund: unspent cash carries into next month |
 | `sort` | number | |
 | `archived` | bool | Hidden from new months |
+| `period` | `monthly` (or empty) or `annual` | Annual envelopes save toward a yearly goal and always keep leftover cash |
+| `goal` | number ≥ 0 | Yearly goal for annual envelopes |
+| `opening_balance` | number | Cash in the envelope at the end of `opening_date`. Set by an import |
+| `opening_date` | date | Balances count from here; earlier months show spending only |
 | `external_id` | text | Unique per user |
 
 ### `budgets` — one per month
@@ -239,6 +271,7 @@ Every collection also has `id`, `owner` (user id), `created` and `updated`.
 | `month` | text `YYYY-MM`, required | Unique per user |
 | `planned_income` | number | Expected take-home pay |
 | `notes` | text | |
+| `imported` | bool | Created by an import. A new month copies envelope amounts from the last month that wasn't imported |
 
 ### `allocations` — how much goes in each envelope for a month
 
@@ -246,7 +279,7 @@ Every collection also has `id`, `owner` (user id), `created` and `updated`.
 | --- | --- | --- |
 | `budget` | relation → budgets, required | |
 | `envelope` | relation → envelopes, required | Unique per budget |
-| `amount` | number | |
+| `amount` | number | Can be negative when envelope transfers moved money out that month |
 
 Left to budget = `planned_income` − sum of the month's allocations (aim for $0).
 Envelope cash left = allocation (+ carried, for rollover envelopes) − the month's expenses.
@@ -256,13 +289,14 @@ Envelope cash left = allocation (+ carried, for rollover envelopes) − the mont
 | Field | Type | |
 | --- | --- | --- |
 | `kind` | `expense` or `income`, required | |
-| `envelope` | relation → envelopes | Expenses only |
+| `envelope` | relation → envelopes | Expense: the envelope it came from. Income: money put straight into that envelope (a refund or payback). Income with no envelope goes to the month's budget |
 | `earner` | relation → earners | Income only: whose paycheck this deposit is |
 | `paystub_status` | `matched`, `needs_paystub` or empty | Set by the server; see [Paychecks](#paychecks) |
 | `date` | date, required | |
 | `amount` | number ≥ 0, required | Always positive; `kind` says which way |
 | `payee` | text | |
 | `note` | text | |
+| `account` | text | Bank or card account, e.g. `Visa` |
 | `external_id` | text | Unique per user |
 
 ### `debts`
