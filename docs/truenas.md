@@ -52,10 +52,11 @@ settings.
 ## 3. First run
 
 1. **Your account.** The first visit to the app shows **Create account**. That email and
-   password are your login. Sign-up closes as soon as it exists.
+   password are your login, and you become the **head of the household**. Sign-up closes
+   as soon as the account exists.
 2. **Admin dashboard account.** You need a superuser for the PocketBase dashboard at
-   `http://<your-nas-ip>:30680/_/` (to add another user, or to mint a long-lived token for
-   n8n). In TrueNAS: **Apps** → `finance-tracker` → **Workloads** → the container's
+   `http://<your-nas-ip>:30680/_/` (to mint a long-lived token for
+   n8n, or to look at the raw data). In TrueNAS: **Apps** → `finance-tracker` → **Workloads** → the container's
    **Shell** button, then run:
 
    ```sh
@@ -64,8 +65,11 @@ settings.
 
    (The container log also prints a one-time setup link. It says `0.0.0.0:8080`; replace
    that with `<your-nas-ip>:30680` if you'd rather use it.)
-3. **More people** (a spouse, say): in the dashboard, **users** → **New record**. Note
-   that each user has their own separate budget, debts and assets.
+3. **More people** (a spouse, say): in the app, the people button at the top right →
+   **Add a person**, with their email and a password to share with them. Everyone in the
+   household shares the same budget, debts and assets. Only the head adds, removes or
+   resets the password of people. (A user a superuser makes in the dashboard starts a
+   separate household of their own.)
 
 ## Optional: OpenClaw paystub reader
 

@@ -21,8 +21,9 @@ npm run test:e2e   # Playwright walkthrough; needs RESET=1 npm run pb first
   must match `pb_migrations/`.
 - Schema changes are new files in `pb_migrations/` (never edit an applied migration), and
   `docs/api.md` must be updated with them: n8n depends on it.
-- Every data collection has `owner` + rules `owner = @request.auth.id`. Relations must also
-  check the related record's owner in create/update rules.
+- Data belongs to a household: every data collection has `owner` (the household head's user id)
+  and rules `owner = @request.auth.household`. Relations must also check the related record's
+  owner in create/update rules. Server routes use `lib.householdOf(e.auth)`, never `e.auth.id`.
 - Business math (budget totals, loan payoff, equity, paystub reading, history import) lives in `app/lib/` and is unit tested.
 - Hook handlers run in isolated runtimes: `require(\`${__hooks}/finance/lib.js\`)` inside each handler.
 - Styling: Tailwind plus the component classes in `app/app.css` (`.chunk`, `.btn`, `.tray`,

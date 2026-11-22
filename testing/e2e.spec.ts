@@ -224,3 +224,43 @@ test("import history from a spreadsheet, with annual envelopes", async ({ page }
   await page.getByRole("button", { name: "Previous month" }).click();
   await expect(page.getByRole("button", { name: /Groceries: \$160 spent/ })).toBeVisible();
 });
+
+test("household: the head adds a person, who shares the same budget", async ({ page }) => {
+  await signIn(page);
+  await page.getByRole("button", { name: "Household" }).click();
+  await expect(page.getByText("Head of household")).toBeVisible();
+  await page.getByRole("button", { name: "Add a person" }).click();
+  const d = page.getByRole("dialog");
+  await d.getByLabel("Name").fill("Brie");
+  await d.getByLabel("Email").fill("brie@example.test");
+  await d.getByLabel("Password").fill("sharedbudget1");
+  await d.getByRole("button", { name: "Add to household" }).click();
+  await expect(page.getByText("brie@example.test")).toBeVisible();
+  await shot(page, "10-household");
+
+  // Brie signs in and sees the same envelopes; what she adds, Joey sees.
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByLabel("Email").fill("brie@example.test");
+  await page.getByLabel("Password").fill("sharedbudget1");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).toHaveURL(/\/budget/);
+  await expect(page.getByRole("button", { name: /Christmas: \$4,210/ })).toBeVisible();
+  await page.getByRole("button", { name: "Spend", exact: true }).click();
+  const s = page.getByRole("dialog");
+  await s.getByLabel("From envelope").selectOption({ label: "🥕 Groceries" });
+  await s.getByLabel("Amount").fill("12.34");
+  await s.getByLabel("Where").fill("Farmers market");
+  await s.getByRole("button", { name: "Spend" }).click();
+  await page.getByRole("button", { name: "Household" }).click();
+  await expect(page.getByRole("button", { name: "Add a person" })).toHaveCount(0); // only the head adds people
+
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await signIn(page);
+  await expect(page.getByText("Farmers market")).toBeVisible();
+
+  // The head removes Brie; the household's data stays.
+  await page.getByRole("button", { name: "Household" }).click();
+  page.once("dialog", (dlg) => dlg.accept());
+  await page.getByRole("button", { name: "Remove Brie" }).click();
+  await expect(page.getByText("brie@example.test")).toHaveCount(0);
+});
