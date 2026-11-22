@@ -39,3 +39,25 @@ jobs:
           context: .
           push: true
           tags: ghcr.io/schentrup-software/finance-tracker:latest
+
+  # On pull requests: build the image and start it the way TrueNAS does, on a data
+  # folder owned by root, to check it fixes the owner and comes up healthy.
+  image-check:
+    needs: test
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t finance-tracker:pr .
+      - name: Start on a root-owned data folder
+        run: |
+          mkdir -p "$RUNNER_TEMP/pb_data" && sudo chown root:root "$RUNNER_TEMP/pb_data"
+          docker run -d --name ft -p 8080:8080 -v "$RUNNER_TEMP/pb_data:/pb/pb_data" finance-tracker:pr
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8080/api/health && break
+            sleep 1
+          done
+          docker logs ft
+          curl -sf http://127.0.0.1:8080/api/health
+          test "$(stat -c %u "$RUNNER_TEMP/pb_data/data.db")" = "568"
+          test "$(docker exec ft sh -c 'ps -o user= -o args= | grep "pocketbase serve" | grep -v grep | head -1 | cut -d" " -f1')" != "root"
