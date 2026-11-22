@@ -179,7 +179,7 @@ with the file as an `input_file` part. Set these on the container:
 | Variable | |
 | --- | --- |
 | `OPENCLAW_URL` | Gateway URL, e.g. `http://192.168.1.20:18789` |
-| `OPENCLAW_TOKEN` | Gateway token or password |
+| `OPENCLAW_TOKEN` | Optional gateway token or password, sent as `Authorization: Bearer …`. Leave it unset when OpenClaw is behind a trusted proxy that handles auth |
 | `OPENCLAW_AGENT` | Optional agent id; the default agent otherwise |
 
 On the OpenClaw side, turn on the endpoint with `gateway.http.endpoints.responses.enabled: true`.

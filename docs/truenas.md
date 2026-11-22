@@ -107,7 +107,7 @@ hand the file to an OpenClaw agent you run:
    ```yaml
        environment:
          OPENCLAW_URL: "http://<openclaw-host>:18789"
-         OPENCLAW_TOKEN: "<gateway token>"
+         OPENCLAW_TOKEN: "<gateway token>"  # leave out if a trusted proxy handles auth
          # OPENCLAW_AGENT: "<agent id>"   # optional; default agent otherwise
    ```
 
