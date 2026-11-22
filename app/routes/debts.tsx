@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import {
   createDebt, createPayment, deleteDebt, deletePayment, errorMessage, fromPbDate, listAssets, listDebts,
-  listPayments, subscribeAll, toPbDate, updateDebt,
+  listPayments, listPayrollDebtIds, subscribeAll, toPbDate, updateDebt,
 } from "~/backend/api";
 import { DEBT_TYPES, type Asset, type Color, type Debt, type DebtPayment, type DebtType } from "~/backend/types";
 import {
@@ -11,7 +11,7 @@ import {
 } from "~/components/ui";
 import { ASSET_EMOJI } from "~/lib/assets";
 import {
-  DEBT_EMOJI, DEBT_LABELS, addMonthsLabel, isMortgage, paidShare, simulateSnowball, snowballOrder,
+  DEBT_EMOJI, DEBT_LABELS, addMonthsLabel, interestLeft, isMortgage, isPayrollLoan, paidShare, payoffMonths,
 } from "~/lib/debts";
 import { shortDate, todayISO } from "~/lib/dates";
 import { money, parseMoney } from "~/lib/money";
@@ -20,25 +20,20 @@ export function meta() {
   return [{ title: "Debts · Finance Tracker" }];
 }
 
-const EXTRA_KEY = "finance_snowball_extra";
-
-function readExtra(): string {
-  try { return localStorage.getItem(EXTRA_KEY) ?? ""; } catch { return ""; }
-}
-
 export default function DebtsPage() {
   const [debts, setDebts] = useState<Debt[] | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [payrollDebts, setPayrollDebts] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Debt | "new" | null>(null);
   const [paying, setPaying] = useState<Debt | null>(null);
-  const [extra, setExtra] = useState(readExtra);
 
   const reload = useCallback(async () => {
     try {
-      const [d, a] = await Promise.all([listDebts(), listAssets()]);
+      const [d, a, p] = await Promise.all([listDebts(), listAssets(), listPayrollDebtIds()]);
       setDebts(d);
       setAssets(a);
+      setPayrollDebts(p);
       setError(null);
     } catch (err) {
       setError(errorMessage(err));
@@ -46,12 +41,7 @@ export default function DebtsPage() {
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
-  useEffect(() => subscribeAll(["debts", "debt_payments", "assets"], reload), [reload]);
-  useEffect(() => { try { localStorage.setItem(EXTRA_KEY, extra); } catch {} }, [extra]);
-
-  const snowball = useMemo(() => snowballOrder((debts ?? []).filter((d) => !isMortgage(d))), [debts]);
-  const house = useMemo(() => (debts ?? []).filter(isMortgage), [debts]);
-  const sim = useMemo(() => simulateSnowball(snowball, parseMoney(extra)), [snowball, extra]);
+  useEffect(() => subscribeAll(["debts", "debt_payments", "assets", "paystub_lines"], reload), [reload]);
 
   const assetsByDebt = useMemo(() => {
     const m = new Map<string, Asset[]>();
@@ -59,10 +49,30 @@ export default function DebtsPage() {
     return m;
   }, [assets]);
 
+  // Each loan on its own: when it's paid off at its own monthly payment.
+  const payoff = useMemo(() => {
+    const m = new Map<string, number | null>();
+    for (const d of debts ?? []) m.set(d.id, payoffMonths(d.balance, d.interest_rate, d.minimum_payment));
+    return m;
+  }, [debts]);
+
+  const byPayoff = (a: Debt, b: Debt) => {
+    const pa = payoff.get(a.id), pb = payoff.get(b.id);
+    return (pa ?? Infinity) - (pb ?? Infinity) || a.balance - b.balance;
+  };
   const all = debts ?? [];
+  const groups = [
+    { key: "loans", title: "Loans and cards", note: null as string | null,
+      items: all.filter((d) => !isMortgage(d) && !isPayrollLoan(d) && d.balance > 0).sort(byPayoff) },
+    { key: "payroll", title: "Paid from your paycheck", note: "Taken out of your pay before it reaches the bank.",
+      items: all.filter((d) => isPayrollLoan(d) && d.balance > 0).sort(byPayoff) },
+    { key: "house", title: "The house", note: null,
+      items: all.filter((d) => isMortgage(d) && d.balance > 0).sort(byPayoff) },
+    { key: "done", title: "Paid off", note: null, items: all.filter((d) => d.balance <= 0) },
+  ];
+
   const totalOwed = all.reduce((s, d) => s + d.balance, 0);
-  const nonHouse = snowball.reduce((s, d) => s + d.balance, 0);
-  const minimums = all.filter((d) => d.balance > 0).reduce((s, d) => s + (d.minimum_payment || 0), 0);
+  const monthly = all.filter((d) => d.balance > 0).reduce((s, d) => s + (d.minimum_payment || 0), 0);
   const original = all.reduce((s, d) => s + Math.max(d.original_balance || 0, d.balance), 0);
   const paid = Math.max(0, original - totalOwed);
 
@@ -76,73 +86,41 @@ export default function DebtsPage() {
 
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
         <Card color="coral" className="pop-in p-6">
-          <Stat label="Total owed" value={money(totalOwed)}
-            hint={house.length ? `${money(nonHouse)} without the house` : `${all.filter((d) => d.balance > 0).length} debts`} />
+          <Stat label="Total owed" value={money(totalOwed)} hint={`${all.filter((d) => d.balance > 0).length} loans and cards`} />
         </Card>
         <Card color="peach" className="pop-in p-6" style={{ ["--i" as any]: 1 }}>
-          <Stat label="Monthly minimums" value={money(minimums)} hint="before any extra" />
+          <Stat label="Monthly payments" value={money(monthly)} hint="all loans together" />
         </Card>
         <Card color="mint" className="pop-in p-6" style={{ ["--i" as any]: 2 }}>
-          <Stat label="Paid off so far" value={money(paid)} hint={original ? `${Math.round((paid / original) * 100)}% of ${money(original)}` : "Add starting balances to track this"} />
+          <Stat label="Paid off so far" value={money(paid)}
+            hint={original ? `${pct(paid / original)} of ${money(original)}` : "Add starting balances to track this"} />
           <div className="mt-3"><Meter value={original ? paid / original : 0} label="Share paid off" /></div>
         </Card>
       </div>
 
       <SectionTitle action={<Button small color="coral" onClick={() => setEditing("new")}><Icon name="plus" className="h-5 w-5" /> Add debt</Button>}>
-        Debt snowball
+        Debts
       </SectionTitle>
 
-      {snowball.length > 0 && (
-        <Card color="butter" className="pop-in mb-6 flex flex-col gap-4 p-5 sm:flex-row sm:items-center">
-          <div className="sm:w-56">
-            <MoneyInput label="Extra each month" placeholder="0" value={extra} onChange={(e) => setExtra(e.target.value)} />
-          </div>
-          <div className="flex-1 font-bold">
-            {sim.months === 0 ? (
-              <span className="text-xl font-black">Debt-free (except the house)! 🎉</span>
-            ) : sim.months === null ? (
-              <>The minimums don't cover the interest. Add some extra to get the snowball rolling.</>
-            ) : (
-              <>
-                <div className="text-xl font-black">Debt-free {house.length ? "except the house " : ""}by {addMonthsLabel(sim.months)}</div>
-                <div className="opacity-80">
-                  {sim.months} months · about {money(sim.totalInterest)} in interest along the way.
-                  Smallest balance first; each one you pay off rolls its payment into the next.
-                </div>
-              </>
-            )}
-          </div>
-        </Card>
-      )}
-
-      {snowball.length === 0 && house.length === 0 ? (
+      {all.length === 0 && (
         <EmptyState emoji="🎉" title="No debts here">
-          Add credit cards, car loans, student loans and the mortgage to start your snowball.
+          Add credit cards, car loans, student loans, 401(k) loans and the mortgage to track each one's payoff date.
         </EmptyState>
-      ) : snowball.length === 0 ? (
-        <EmptyState emoji="🎉" title="Nothing but the house">Baby Step 2 done. Time to build the emergency fund and invest.</EmptyState>
-      ) : (
-        <div className="space-y-5">
-          {snowball.map((d, i) => (
-            <DebtCard key={d.id} debt={d} rank={i + 1} focus={i === 0 && d.balance > 0}
-              payoff={sim.payoffMonth[d.id]} assets={assetsByDebt.get(d.id) ?? []}
-              onEdit={() => setEditing(d)} onPay={() => setPaying(d)} />
-          ))}
-        </div>
       )}
 
-      {house.length > 0 && (
-        <>
-          <SectionTitle>The house</SectionTitle>
-          <p className="-mt-2 mb-4 font-semibold opacity-75">Paid off last, after the snowball and investing.</p>
+      {groups.filter((g) => g.items.length > 0).map((g, gi) => (
+        <section key={g.key} className={gi > 0 ? "mt-10" : ""}>
+          {(gi > 0 || g.key !== "loans") && <h3 className="mb-1 text-xl font-black">{g.title}</h3>}
+          {g.note && <p className="mb-3 font-semibold opacity-75">{g.note}</p>}
           <div className="space-y-5">
-            {house.map((d) => (
-              <DebtCard key={d.id} debt={d} assets={assetsByDebt.get(d.id) ?? []}
+            {g.items.map((d, i) => (
+              <DebtCard key={d.id} debt={d} index={i} months={payoff.get(d.id) ?? null}
+                fromPaycheck={payrollDebts.has(d.id)} assets={assetsByDebt.get(d.id) ?? []}
                 onEdit={() => setEditing(d)} onPay={() => setPaying(d)} />
             ))}
           </div>
-        </>
-      )}
+        </section>
+      ))}
 
       <DebtForm open={editing !== null} debt={editing === "new" ? null : editing}
         onClose={() => setEditing(null)} onSaved={reload} />
@@ -151,15 +129,20 @@ export default function DebtsPage() {
   );
 }
 
-function DebtCard({ debt, rank, focus, payoff, assets, onEdit, onPay }: {
-  debt: Debt; rank?: number; focus?: boolean; payoff?: number; assets: Asset[]; onEdit: () => void; onPay: () => void;
+function pct(x: number) {
+  if (x > 0 && x < 0.01) return "<1%";
+  return `${Math.round(x * 100)}%`;
+}
+
+function DebtCard({ debt, index, months, fromPaycheck, assets, onEdit, onPay }: {
+  debt: Debt; index: number; months: number | null; fromPaycheck: boolean; assets: Asset[]; onEdit: () => void; onPay: () => void;
 }) {
   const done = debt.balance <= 0;
   const type = (debt.type || "other") as DebtType;
-  const color: Color | "white" = done ? "mint" : focus ? "coral" : "white";
   const share = paidShare(debt);
+  const interest = done ? 0 : interestLeft(debt.balance, debt.interest_rate, debt.minimum_payment);
   return (
-    <Card color={color} className={cx("pop-in p-5 sm:p-6", focus && "ring-4 ring-[var(--cd)]")} style={{ ["--i" as any]: rank ?? 0 }}>
+    <Card color={done ? "mint" : "white"} className="pop-in p-5 sm:p-6" style={{ ["--i" as any]: index }}>
       <div className="flex flex-wrap items-start gap-4">
         <div className={cx("flex h-14 w-14 flex-none items-center justify-center rounded-full text-2xl", `c-${done ? "mint" : "peach"}`)}
           style={{ background: "var(--c)", boxShadow: "0 4px 0 var(--cd)" }} aria-hidden="true">
@@ -167,9 +150,8 @@ function DebtCard({ debt, rank, focus, payoff, assets, onEdit, onPay }: {
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            {rank && !done && <span className="pill c-white">#{rank}</span>}
-            {focus && <span className="pill c-butter">Focus here</span>}
             <h3 className="truncate text-xl font-black">{debt.name}</h3>
+            {fromPaycheck && <span className="pill c-lilac">From paycheck</span>}
           </div>
           <div className="mt-0.5 text-sm font-bold opacity-75">
             {DEBT_LABELS[type]}{debt.lender && ` · ${debt.lender}`}
@@ -189,16 +171,25 @@ function DebtCard({ debt, rank, focus, payoff, assets, onEdit, onPay }: {
         </div>
         <div className="text-right">
           <div className="num text-3xl font-black">{done ? "Paid off!" : money(debt.balance)}</div>
-          {!done && payoff && <div className="text-sm font-bold opacity-75">gone by {addMonthsLabel(payoff)}</div>}
+          {!done && (
+            <div className="text-sm font-bold opacity-75">
+              {months === null
+                ? debt.minimum_payment ? "payment doesn't cover interest" : "add a monthly payment for a payoff date"
+                : <>paid off {addMonthsLabel(months)}</>}
+            </div>
+          )}
+          {!done && interest !== null && interest > 0 && (
+            <div className="text-xs font-bold opacity-60">{money(interest)} interest to go</div>
+          )}
         </div>
       </div>
       <div className="mt-4 flex items-center gap-4">
         <div className="flex-1"><Meter value={share} color={done ? "mint" : "coral"} label="Paid off" /></div>
-        <span className="num w-12 text-right text-sm font-black">{Math.round(share * 100)}%</span>
+        <span className="num w-12 text-right text-sm font-black">{pct(share)}</span>
       </div>
       <div className="mt-4 flex justify-end gap-2">
         <button className="btn-ghost text-sm" onClick={onEdit}><Icon name="edit" className="h-4 w-4" /> Edit</button>
-        {!done && <Button small color="mint" onClick={onPay}><Icon name="cash" className="h-4 w-4" /> Make a payment</Button>}
+        {!done && <Button small color="mint" onClick={onPay}><Icon name="cash" className="h-4 w-4" /> Record a payment</Button>}
       </div>
     </Card>
   );
@@ -280,7 +271,7 @@ function DebtForm({ open, debt, onClose, onSaved }: { open: boolean; debt: Debt 
         </div>
         <div className="grid grid-cols-3 gap-3">
           <TextInput label="APR %" type="number" step="0.01" min="0" inputMode="decimal" value={f.interest_rate ?? ""} onChange={set("interest_rate")} />
-          <MoneyInput label="Minimum" value={f.minimum_payment ?? ""} onChange={set("minimum_payment")} />
+          <MoneyInput label="Monthly payment" value={f.minimum_payment ?? ""} onChange={set("minimum_payment")} />
           <TextInput label="Due day" type="number" min="1" max="31" value={f.due_day ?? ""} onChange={set("due_day")} />
         </div>
         <TextArea label="Notes" value={f.notes ?? ""} onChange={set("notes")} />
@@ -332,7 +323,7 @@ function PaymentModal({ debt, onClose, onSaved }: { debt: Debt; onClose: () => v
           <MoneyInput label="Payment" required value={amount} onChange={(e) => setAmount(e.target.value)} />
           <TextInput label="Date" type="date" required value={date} onChange={(e) => setDate(e.target.value)} />
         </div>
-        <TextInput label="Note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Snowball payment" />
+        <TextInput label="Note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Extra payment" />
         <ErrorNote message={error} />
         <button className="btn c-mint w-full" disabled={busy}>{busy ? "Saving…" : "Record payment"}</button>
         <p className="text-center text-xs font-semibold opacity-70">The balance goes down by the payment. Deleting a payment puts it back.</p>

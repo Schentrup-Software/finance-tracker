@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
-  createEnvelope, createTransaction, deleteEnvelope, deleteTransaction, errorMessage, fromPbDate,
+  createEnvelope, createTransaction, listEarners, deleteEnvelope, deleteTransaction, errorMessage, fromPbDate,
   loadMonth, setAllocation, startMonth, subscribeAll, toPbDate, updateBudget, updateEnvelope,
   type MonthData,
 } from "~/backend/api";
-import { ENVELOPE_GROUPS, type Color, type Envelope, type EnvelopeGroup, type TransactionKind } from "~/backend/types";
+import { ENVELOPE_GROUPS, type Color, type Earner, type Envelope, type EnvelopeGroup, type TransactionKind } from "~/backend/types";
 import { EnvelopeArt } from "~/components/EnvelopeArt";
+import { Paychecks } from "~/components/Paychecks";
 import {
   Button, Card, ColorPicker, EmptyState, ErrorNote, FormActions, Icon, Meter, Modal, MoneyInput,
   RoundButton, SectionTitle, Select, Stat, TextInput, Toggle, cx,
@@ -86,6 +87,8 @@ export default function BudgetPage() {
       ) : summary && (
         <>
           <SummaryRow summary={summary} onEditIncome={() => setEditIncome(true)} />
+
+          <Paychecks month={month} />
 
           <SectionTitle action={
             <div className="flex gap-2">
@@ -449,6 +452,8 @@ function TransactionForm({ kind, envelopes, month, onClose, onSaved }: {
   kind: TransactionKind | null; envelopes: Envelope[]; month: string; onClose: () => void; onSaved: () => void;
 }) {
   const [envelope, setEnvelope] = useState("");
+  const [earner, setEarner] = useState("");
+  const [earners, setEarners] = useState<Earner[]>([]);
   const [amount, setAmount] = useState("");
   const [payee, setPayee] = useState("");
   const [date, setDate] = useState(defaultDate(month));
@@ -457,6 +462,13 @@ function TransactionForm({ kind, envelopes, month, onClose, onSaved }: {
 
   useEffect(() => {
     if (!kind) return;
+    if (kind === "income") {
+      listEarners().then((es) => {
+        const active = es.filter((e) => !e.archived);
+        setEarners(active);
+        setEarner(active[0]?.id ?? "");
+      }).catch(() => setEarners([]));
+    }
     setEnvelope(envelopes[0]?.id ?? "");
     setAmount("");
     setPayee("");
@@ -472,8 +484,10 @@ function TransactionForm({ kind, envelopes, month, onClose, onSaved }: {
     setBusy(true);
     try {
       await createTransaction({
-        kind: kind!, amount: v, payee: payee.trim(), date: toPbDate(date),
+        kind: kind!, amount: v, date: toPbDate(date),
+        payee: payee.trim() || (kind === "income" && earner ? `${earners.find((e) => e.id === earner)?.name ?? ""} paycheck`.trim() : ""),
         envelope: kind === "expense" ? envelope : "",
+        earner: kind === "income" ? earner : "",
       });
       onSaved();
       onClose();
@@ -492,8 +506,13 @@ function TransactionForm({ kind, envelopes, month, onClose, onSaved }: {
           <Select label="From envelope" value={envelope} onChange={(e) => setEnvelope(e.target.value)}
             options={envelopes.map((e) => ({ value: e.id, label: `${e.emoji ? e.emoji + " " : ""}${e.name}` }))} />
         )}
+        {isIncome && earners.length > 0 && (
+          <Select label="Whose paycheck?" value={earner} onChange={(e) => setEarner(e.target.value)}
+            hint="Paychecks are checked against the last paystub. If the amount changed, you'll be asked for the new paystub."
+            options={[...earners.map((e) => ({ value: e.id, label: e.name })), { value: "", label: "Not a paycheck" }]} />
+        )}
         <div className="grid grid-cols-2 gap-3">
-          <MoneyInput label="Amount" required value={amount} onChange={(e) => setAmount(e.target.value)} />
+          <MoneyInput label={isIncome ? "Amount deposited" : "Amount"} required value={amount} onChange={(e) => setAmount(e.target.value)} />
           <TextInput label="Date" type="date" required value={date} onChange={(e) => setDate(e.target.value)} />
         </div>
         <TextInput label={isIncome ? "From" : "Where"} placeholder={isIncome ? "Paycheck" : "Publix"}
@@ -555,6 +574,8 @@ function ActivityList({ data, summary }: { data: MonthData; summary: ReturnType<
                   <span className="block truncate font-extrabold">{t.payee || (income ? "Income" : "Spent")}</span>
                   <span className="block text-xs font-bold opacity-70">
                     {shortDate(fromPbDate(t.date))} · {income ? "Income" : env?.name ?? "No envelope"}
+                    {t.paystub_status === "needs_paystub" && <span className="pill c-butter ml-2">needs paystub</span>}
+                    {t.paystub_status === "matched" && <span className="ml-2 opacity-70">· paystub ✓</span>}
                   </span>
                 </span>
                 <span className={cx("num font-black", income && "text-[#4c9a63]")}>

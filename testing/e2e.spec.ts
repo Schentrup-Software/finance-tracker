@@ -1,4 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
+import { fileURLToPath } from "node:url";
+
+const PAYSTUB_PDF = fileURLToPath(new URL("./fixtures/paystub.pdf", import.meta.url));
 
 const EMAIL = "joey@example.test";
 const PASSWORD = "envelopes123";
@@ -61,7 +64,7 @@ test("budget: start a month with starter envelopes, fund and spend", async ({ pa
   await shot(page, "02-budget");
 });
 
-test("debts: snowball order, payments lower the balance", async ({ page }) => {
+test("debts: each loan has its own payoff date, payments lower the balance", async ({ page }) => {
   await signIn(page);
   await page.getByRole("link", { name: /Debts/ }).click();
 
@@ -72,7 +75,7 @@ test("debts: snowball order, payments lower the balance", async ({ page }) => {
     await d.getByLabel("Type").selectOption(type);
     await d.getByLabel("Balance today").fill(balance);
     await d.getByLabel("APR %").fill(apr);
-    await d.getByLabel("Minimum").fill(min);
+    await d.getByLabel("Monthly payment").fill(min);
     await d.getByRole("button", { name: "Add debt" }).click();
     await expect(page.getByRole("heading", { name })).toBeVisible();
   }
@@ -80,19 +83,17 @@ test("debts: snowball order, payments lower the balance", async ({ page }) => {
   await addDebt("Visa", "credit_card", "1850", "22.9", "55");
   await addDebt("Home mortgage", "mortgage", "245000", "3.25", "1650");
 
-  const headings = page.locator("h3");
-  await expect(headings.nth(0)).toHaveText("Visa");
-  await expect(headings.nth(1)).toHaveText("Car loan");
   await expect(page.getByRole("heading", { name: "The house" })).toBeVisible();
+  await expect(page.getByText(/paid off \w+ \d{4}/).first()).toBeVisible();
+  await expect(page.getByText(/snowball|debt-free/i)).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Make a payment" }).first().click();
+  await page.locator("div.chunk", { has: page.getByRole("heading", { name: "Visa" }) })
+    .getByRole("button", { name: "Record a payment" }).click();
   const d = page.getByRole("dialog");
   await d.getByLabel("Payment").fill("350");
   await d.getByRole("button", { name: "Record payment" }).click();
   await expect(d.getByText("$1,500").first()).toBeVisible();
   await d.getByRole("button", { name: "Close" }).click();
-  await page.getByLabel("Extra each month").fill("500");
-  await expect(page.getByText(/Debt-free except the house by/)).toBeVisible();
   await shot(page, "03-debts");
 });
 
@@ -121,4 +122,65 @@ test("assets: link a mortgage to the house and see equity", async ({ page }) => 
   // 524,200 assets - (1,500 + 14,200 + 245,000) debts
   await expect(page.getByText("$263,500").first()).toBeVisible();
   await shot(page, "04-assets");
+});
+
+test("paychecks: read a PDF paystub, then match the next paycheck to the cent", async ({ page }) => {
+  await signIn(page);
+
+  // A 401(k) loan that the paystub pays down.
+  await page.getByRole("link", { name: /Debts/ }).click();
+  await page.getByRole("button", { name: "Add debt" }).click();
+  let d = page.getByRole("dialog");
+  await d.getByLabel("Name").fill("401(k) loan");
+  await d.getByLabel("Type").selectOption("401k_loan");
+  await d.getByLabel("Balance today").fill("6000");
+  await d.getByLabel("Monthly payment").fill("262.47");
+  await d.getByRole("button", { name: "Add debt" }).click();
+  await expect(page.getByRole("heading", { name: "Paid from your paycheck" })).toBeVisible();
+
+  await page.getByRole("link", { name: /Budget/ }).click();
+  await page.getByRole("button", { name: "Add an earner" }).click();
+  d = page.getByRole("dialog");
+  await d.getByLabel("Name").fill("Joey");
+  await d.getByLabel("Employer").fill("Acme Widgets");
+  await d.getByRole("button", { name: "Add earner" }).click();
+
+  // A paycheck lands with no paystub on file: the app asks for one.
+  await page.getByRole("button", { name: "Income", exact: true }).click();
+  d = page.getByRole("dialog");
+  await d.getByLabel("Whose paycheck?").selectOption({ label: "Joey" });
+  await d.getByLabel("Amount deposited").fill("2313.10");
+  await d.getByLabel("Date").fill("2026-11-21");
+  await d.getByRole("button", { name: "Add income" }).click();
+  await expect(page.getByText(/Joey paycheck of \$2,313\.10 on Nov 21 is different/)).toBeVisible();
+
+  await page.getByRole("button", { name: "Upload paystub" }).click();
+  d = page.getByRole("dialog");
+  await d.getByLabel("Paystub file").setInputFiles(PAYSTUB_PDF);
+  await expect(d.getByText("Read from the paystub. Check it over, then save.")).toBeVisible();
+  await expect(d.getByLabel("Gross pay")).toHaveValue("3500");
+  await expect(d.getByText("✓ Gross minus everything above equals the take-home.")).toBeVisible();
+  await expect(d.getByLabel("Pays down")).toHaveValue(/.+/); // linked to the only 401(k) loan
+  await shot(page, "05-paystub-review");
+  await d.getByRole("button", { name: "Save paystub" }).click();
+  await expect(page.getByText(/is different/)).toHaveCount(0);
+  await expect(page.getByText("Before it hits the bank")).toBeVisible();
+  await expect(page.getByText("−$723.93")).toBeVisible(); // taxes
+  await expect(page.getByText("−$166.83")).toBeVisible(); // medical + dental + vision
+
+  // Next paycheck is a cent off: same taxes and deductions are assumed.
+  await page.getByRole("button", { name: "Income", exact: true }).click();
+  d = page.getByRole("dialog");
+  await d.getByLabel("Amount deposited").fill("2313.11");
+  await d.getByLabel("Date").fill("2026-11-28");
+  await d.getByRole("button", { name: "Add income" }).click();
+  await expect(page.getByText(/is different/)).toHaveCount(0);
+  await expect(page.getByText("Same as last")).toBeVisible();
+  await expect(page.getByText("−$1,447.86")).toBeVisible(); // two paychecks of taxes
+  await shot(page, "06-paychecks");
+
+  // Both paychecks' 401(k) loan lines paid down the loan.
+  await page.getByRole("link", { name: /Debts/ }).click();
+  await expect(page.getByText("$5,757.72")).toBeVisible();
+  await expect(page.getByText("From paycheck")).toBeVisible();
 });

@@ -15,6 +15,11 @@ services:
       - "30680:8080" # host:container - change the left side if 30680 is taken
     volumes:
       - /mnt/tank/apps/finance-tracker/pb_data:/pb/pb_data
+    # Optional: an OpenClaw agent reads paystubs the built-in reader can't.
+    # See docs/truenas.md. Remove the # on these three lines to turn it on.
+    # environment:
+    #   OPENCLAW_URL: "http://192.168.1.20:18789"
+    #   OPENCLAW_TOKEN: "your-gateway-token"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
       interval: 30s

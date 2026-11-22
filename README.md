@@ -6,9 +6,14 @@ Budgets, debts and assets in one place. A small self-hosted web app with three t
   take-home pay and give every dollar a job until "left to budget" is $0. Spending comes
   out of an envelope, and each envelope shows how much cash is left. Rollover envelopes
   work as sinking funds and keep their leftover cash from month to month.
-- **Debts**: the debt snowball. Debts are listed smallest balance first (the mortgage is
-  kept separate), with minimums, APR, payment history and a "debt-free by" date that
-  updates as you change the extra you throw at it each month.
+  **Paychecks** sit on the same page: each earner in the household, their paystubs, and
+  what comes out before the money reaches the bank (taxes, healthcare, retirement, 401(k)
+  loans). A deposit within one cent of the last paycheck reuses its deductions; anything
+  else asks for the new paystub, which the app reads from the PDF (with an optional
+  OpenClaw agent as backup).
+- **Debts**: every loan and card with its balance, APR, monthly payment, payment history
+  and its own payoff date. 401(k) loans paid from a paycheck go down automatically with
+  each paystub, and the mortgage is listed separately.
 - **Assets**: net worth, and everything you own: real estate, vehicles, collectibles,
   checking and savings, brokerage, 401(k), IRA, Roth IRA, HSA, 529, crypto. Link a
   mortgage or car loan to an asset to see your equity in it.
@@ -54,7 +59,7 @@ Tests:
 
 ```bash
 npm run typecheck
-npm test                 # budget, snowball and net-worth logic
+npm test                 # budget, loan payoff, net worth and paystub reading
 npm run test:api         # API rules, payments and sync, against the local PocketBase
 RESET=1 npm run pb && npm run test:e2e   # browser walkthrough (needs a fresh database)
 ```
@@ -65,10 +70,10 @@ RESET=1 npm run pb && npm run test:e2e   # browser walkthrough (needs a fresh da
 app/
   routes/        budget.tsx, debts.tsx, assets.tsx, login.tsx, app-layout.tsx (tabs)
   backend/       api.ts (all PocketBase calls), types.ts, pocketbaseClient.ts
-  lib/           budget, debt snowball and asset math (unit tested)
+  lib/           budget, loan payoff, asset and paystub-reading logic (unit tested)
   components/    shared UI (ui.tsx), envelope art, logo
 pb_migrations/   collections, fields and API rules
-pb_hooks/        sign-up lock, owner fill-in, debt balance updates, /api/sync endpoint
+pb_hooks/        sign-up lock, owner fill-in, debt balances, paycheck matching, /api/sync, paystub reader fallback
 docs/api.md      API reference for n8n
 docs/truenas.md  TrueNAS install guide (deploy/truenas.yaml)
 ```

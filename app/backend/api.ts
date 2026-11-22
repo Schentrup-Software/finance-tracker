@@ -2,7 +2,7 @@
 
 import pb from "./pocketbaseClient";
 import type {
-  Allocation, Asset, BaseRecord, Budget, Debt, DebtPayment, Draft, Envelope, Transaction,
+  Allocation, Asset, BaseRecord, Budget, Debt, DebtPayment, Draft, Earner, Envelope, Paystub, PaystubLine, Transaction,
 } from "./types";
 import { monthRange } from "~/lib/dates";
 
@@ -57,7 +57,8 @@ export async function refreshAuth(): Promise<boolean> {
 
 type Name =
   | "envelopes" | "budgets" | "allocations" | "transactions"
-  | "debts" | "debt_payments" | "assets";
+  | "debts" | "debt_payments" | "assets"
+  | "earners" | "paystubs" | "paystub_lines";
 
 function list<T>(name: Name, options: { filter?: string; sort?: string } = {}) {
   return pb.collection(name).getFullList<T>({ batch: 500, ...options });
@@ -216,6 +217,108 @@ export const listAssets = () => list<Asset>("assets", { sort: "-value" });
 export const createAsset = (d: Draft<Asset>) => create<Asset>("assets", d);
 export const updateAsset = (id: string, d: Draft<Asset>) => update<Asset>("assets", id, d);
 export const deleteAsset = (id: string) => remove("assets", id);
+
+// ---------- Paychecks ----------
+
+export const listEarners = () => list<Earner>("earners", { sort: "created" });
+export const createEarner = (d: Draft<Earner>) => create<Earner>("earners", d);
+export const updateEarner = (id: string, d: Draft<Earner>) => update<Earner>("earners", id, d);
+export const deleteEarner = (id: string) => remove("earners", id);
+
+export interface PaycheckData {
+  earners: Earner[];
+  /** Paystubs paid in the month, newest first. */
+  paystubs: Paystub[];
+  lines: PaystubLine[];
+  /** Deposits (any month) still waiting for a paystub. */
+  waiting: Transaction[];
+}
+
+export async function loadPaychecks(month: string): Promise<PaycheckData> {
+  const { start, end } = monthRange(month);
+  const [earners, paystubs, lines, waiting] = await Promise.all([
+    listEarners(),
+    list<Paystub>("paystubs", { filter: pb.filter("pay_date >= {:s} && pay_date < {:e}", { s: start, e: end }), sort: "-pay_date" }),
+    list<PaystubLine>("paystub_lines", {
+      filter: pb.filter("paystub.pay_date >= {:s} && paystub.pay_date < {:e}", { s: start, e: end }), sort: "sort,created",
+    }),
+    list<Transaction>("transactions", { filter: "paystub_status = 'needs_paystub'", sort: "-date" }),
+  ]);
+  return { earners, paystubs, lines, waiting };
+}
+
+export const listPaystubLines = (paystubId: string) =>
+  list<PaystubLine>("paystub_lines", { filter: pb.filter("paystub = {:p}", { p: paystubId }), sort: "sort,created" });
+
+/** The most recent paystub for an earner, to prefill a new one. */
+export async function latestPaystub(earnerId: string): Promise<{ paystub: Paystub; lines: PaystubLine[] } | null> {
+  const rows = await pb.collection("paystubs").getList<Paystub>(1, 1, {
+    filter: pb.filter("earner = {:e}", { e: earnerId }), sort: "-pay_date,-created",
+  });
+  const paystub = rows.items[0];
+  return paystub ? { paystub, lines: await listPaystubLines(paystub.id) } : null;
+}
+
+export type LineDraft = { id?: string; category: PaystubLine["category"]; label: string; amount: number; debt: string };
+
+/**
+ * Saves a paystub and replaces its lines. The server then ties it to a waiting
+ * deposit, and turns loan lines into payments on their debts.
+ */
+export async function savePaystub(
+  existing: Paystub | null,
+  data: Draft<Paystub>,
+  lines: LineDraft[],
+  file?: File | null,
+): Promise<Paystub> {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(data)) if (v !== undefined && v !== null) form.append(k, String(v));
+  if (file) form.append("file", file);
+  if (!existing) form.append("owner", pb.authStore.record?.id ?? "");
+  const paystub = existing
+    ? await pb.collection("paystubs").update<Paystub>(existing.id, form)
+    : await pb.collection("paystubs").create<Paystub>(form);
+
+  const before = existing ? await listPaystubLines(existing.id) : [];
+  const keep = new Set(lines.filter((l) => l.id).map((l) => l.id));
+  await Promise.all(before.filter((l) => !keep.has(l.id)).map((l) => remove("paystub_lines", l.id)));
+  await Promise.all(lines.map((l, i) => {
+    const d = { paystub: paystub.id, category: l.category, label: l.label, amount: l.amount, debt: l.debt, sort: i };
+    return l.id ? update<PaystubLine>("paystub_lines", l.id, d) : create<PaystubLine>("paystub_lines", d);
+  }));
+  return paystub;
+}
+
+export const deletePaystub = (id: string) => remove("paystubs", id);
+
+/** A short-lived link to a paystub's file (files are protected). */
+export async function paystubFileUrl(p: Paystub): Promise<string> {
+  const token = await pb.files.getToken();
+  return pb.files.getURL(p, p.file, { token });
+}
+
+/** Whether the server has an OpenClaw agent to fall back on for reading paystubs. */
+export async function agentReaderAvailable(): Promise<boolean> {
+  try {
+    return (await pb.send<{ agent: boolean }>("/api/paystubs/reader", { method: "GET" })).agent;
+  } catch {
+    return false;
+  }
+}
+
+export function readPaystubWithAgent(filename: string, mediaType: string, data: string) {
+  return pb.send<unknown>("/api/paystubs/read", {
+    method: "POST",
+    body: { filename, media_type: mediaType, data },
+    requestKey: null,
+  });
+}
+
+/** Debts that some paystub pays down (401(k) loans and the like). */
+export async function listPayrollDebtIds(): Promise<Set<string>> {
+  const rows = await list<PaystubLine>("paystub_lines", { filter: "debt != ''" });
+  return new Set(rows.map((r) => r.debt));
+}
 
 /** Turns a PocketBase error into one readable sentence. */
 export function errorMessage(err: unknown): string {

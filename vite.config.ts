@@ -19,6 +19,9 @@ const silenceChromeDevtoolsProbe = {
 
 export default defineConfig({
   plugins: [silenceChromeDevtoolsProbe, !process.env.VITEST && reactRouter(), tsconfigPaths()],
+  // Pre-bundle the PDF reader so the dev server doesn't reload the page the
+  // first time a paystub is opened.
+  optimizeDeps: { include: ["pdfjs-dist"] },
   css: {
     postcss: "./postcss.config.mjs",
   },

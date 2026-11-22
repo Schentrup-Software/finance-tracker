@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Allocation, Envelope, Transaction } from "~/backend/types";
 import { summarize } from "~/lib/budget";
-import { simulateSnowball, snowballOrder, paidShare } from "~/lib/debts";
+import { interestLeft, paidShare, payoffMonths } from "~/lib/debts";
 import { equity, netWorth, groupFor } from "~/lib/assets";
 import { nextMonth, monthRange } from "~/lib/dates";
 import { parseMoney } from "~/lib/money";
@@ -14,6 +14,7 @@ const env = (id: string, extra: Partial<Envelope> = {}): Envelope => ({
 const alloc = (envelope: string, amount: number): Allocation => ({ ...base, id: envelope + "a", budget: "b", envelope, amount });
 const tx = (envelope: string, amount: number, kind: Transaction["kind"] = "expense"): Transaction => ({
   ...base, id: Math.random().toString(), kind, envelope, amount, date: "2026-11-05", payee: "", note: "", external_id: "",
+  earner: "", paystub_status: "",
 });
 
 describe("cash envelope budget", () => {
@@ -48,33 +49,23 @@ describe("cash envelope budget", () => {
   });
 });
 
-describe("debt snowball", () => {
-  const debts = [
-    { id: "big", name: "Car", balance: 9000, interest_rate: 5, minimum_payment: 300 },
-    { id: "small", name: "Visa", balance: 800, interest_rate: 24, minimum_payment: 40 },
-    { id: "mid", name: "Student", balance: 4000, interest_rate: 6, minimum_payment: 100 },
-  ];
-
-  it("orders by smallest balance, ignoring interest", () => {
-    expect(snowballOrder(debts).map((d) => d.id)).toEqual(["small", "mid", "big"]);
+describe("loan payoff", () => {
+  it("no interest: balance / payment, rounded up", () => {
+    expect(payoffMonths(1000, 0, 100)).toBe(10);
+    expect(payoffMonths(1001, 0, 100)).toBe(11);
   });
-
-  it("pays the smallest off first and finishes", () => {
-    const r = simulateSnowball(debts, 500);
-    expect(r.months).not.toBeNull();
-    expect(r.payoffMonth.small).toBeLessThan(r.payoffMonth.mid);
-    expect(r.payoffMonth.mid).toBeLessThanOrEqual(r.payoffMonth.big);
-    expect(r.totalInterest).toBeGreaterThan(0);
+  it("matches a standard amortization", () => {
+    // $20,000 at 6% with $386.66/mo is a 60-month loan.
+    expect(payoffMonths(20000, 6, 386.66)).toBe(60);
+    expect(interestLeft(20000, 6, 386.66)).toBeCloseTo(3199.6, 0);
   });
-
-  it("extra money makes it faster", () => {
-    expect(simulateSnowball(debts, 1000).months!).toBeLessThan(simulateSnowball(debts, 0).months!);
+  it("never, when the payment doesn't cover interest or is missing", () => {
+    expect(payoffMonths(10000, 30, 10)).toBeNull();
+    expect(payoffMonths(10000, 5, 0)).toBeNull();
   });
-
-  it("reports never when minimums don't cover interest", () => {
-    expect(simulateSnowball([{ id: "x", name: "x", balance: 10000, interest_rate: 30, minimum_payment: 10 }], 0).months).toBeNull();
+  it("paid off is zero months", () => {
+    expect(payoffMonths(0, 5, 100)).toBe(0);
   });
-
   it("tracks share paid", () => {
     expect(paidShare({ balance: 250, original_balance: 1000 })).toBe(0.75);
     expect(paidShare({ balance: 0, original_balance: 0 })).toBe(1);

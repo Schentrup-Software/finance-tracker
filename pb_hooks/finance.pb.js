@@ -34,6 +34,9 @@ onRecordCreateRequest(
     }
     e.next();
   },
+  "earners",
+  "paystubs",
+  "paystub_lines",
   "envelopes",
   "budgets",
   "allocations",
@@ -68,6 +71,98 @@ onRecordDelete((e) => {
   e.next();
   lib.adjustDebtBalance(e.app, debt, amount);
 }, "debt_payments");
+
+// ---------- Paychecks ----------
+
+// An income deposit from an earner: if the take-home pay is within one cent of
+// their last paystub, copy that paystub (same taxes and deductions). Otherwise
+// mark it "needs_paystub" so the app asks for this paycheck's stub.
+onRecordCreate((e) => {
+  e.next();
+  if (e.record.get("kind") === "income" && e.record.get("earner")) {
+    require(`${__hooks}/finance/lib.js`).reconcilePaycheck(e.app, e.record);
+  }
+}, "transactions");
+
+onRecordUpdate((e) => {
+  const before = e.record.original();
+  const changed = ["kind", "earner", "amount", "date"].some((f) => String(before.get(f)) !== String(e.record.get(f)));
+  e.next();
+  if (!changed) return;
+  const lib = require(`${__hooks}/finance/lib.js`);
+  if (e.record.get("kind") === "income" && e.record.get("earner")) {
+    lib.reconcilePaycheck(e.app, e.record);
+  } else {
+    lib.setPaystubStatus(e.app, e.record, "");
+  }
+}, "transactions");
+
+// A deleted deposit takes its copied paystub (and the loan payments on it) along.
+onRecordDelete((e) => {
+  const copies = e.app.findRecordsByFilter("paystubs", "transaction = {:t} && source = 'repeat'", "", 0, 0, { t: e.record.id });
+  for (const p of copies) e.app.delete(p);
+  e.next();
+}, "transactions");
+
+onRecordCreate((e) => {
+  e.next();
+  require(`${__hooks}/finance/lib.js`).attachPaystub(e.app, e.record);
+}, "paystubs");
+
+onRecordUpdate((e) => {
+  const before = e.record.original();
+  const oldTx = before.get("transaction");
+  e.next();
+  const lib = require(`${__hooks}/finance/lib.js`);
+  if (oldTx && oldTx !== e.record.get("transaction")) lib.detachPaystub(e.app, oldTx);
+  if (e.record.get("source") !== "repeat") lib.attachPaystub(e.app, e.record);
+  // Loan payments are dated by the paystub.
+  if (before.getString("pay_date") !== e.record.getString("pay_date")) {
+    const lines = e.app.findRecordsByFilter("paystub_lines", "paystub = {:p} && debt != ''", "", 0, 0, { p: e.record.id });
+    for (const l of lines) lib.syncLinePayment(e.app, l);
+  }
+}, "paystubs");
+
+onRecordDelete((e) => {
+  const txId = e.record.get("transaction");
+  e.next();
+  require(`${__hooks}/finance/lib.js`).detachPaystub(e.app, txId);
+}, "paystubs");
+
+// A loan line on a paystub (a 401(k) loan repayment) pays down its debt.
+onRecordCreate((e) => {
+  e.next();
+  if (e.record.get("debt")) require(`${__hooks}/finance/lib.js`).syncLinePayment(e.app, e.record);
+}, "paystub_lines");
+
+onRecordUpdate((e) => {
+  e.next();
+  require(`${__hooks}/finance/lib.js`).syncLinePayment(e.app, e.record);
+}, "paystub_lines");
+
+onRecordDelete((e) => {
+  const owner = e.record.get("owner");
+  const id = e.record.id;
+  e.next();
+  require(`${__hooks}/finance/lib.js`).removeLinePayment(e.app, owner, id);
+}, "paystub_lines");
+
+// ---------- Paystub reader fallback (OpenClaw) ----------
+
+// Whether a fallback reader is configured, so the app can offer it.
+routerAdd("GET", "/api/paystubs/reader", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  return e.json(200, { agent: !!lib.agentConfig() });
+}, $apis.requireAuth("users"));
+
+// POST { "filename": "stub.pdf", "media_type": "application/pdf", "data": "<base64>" }
+// Returns the agent's reading: { pay_date, gross, net, lines: [...] }. Nothing is saved.
+routerAdd("POST", "/api/paystubs/read", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  const body = e.requestInfo().body || {};
+  if (!body.data) throw new BadRequestError("Send the paystub as base64 in `data`.");
+  return e.json(200, lib.readPaystubWithAgent(String(body.data), body.filename, body.media_type));
+}, $apis.requireAuth("users"), $apis.bodyLimit(20 << 20));
 
 // ---------- Sync endpoint for n8n ----------
 

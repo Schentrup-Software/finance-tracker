@@ -9,6 +9,7 @@ export const DEBT_LABELS: Record<DebtType, string> = {
   personal: "Personal loan",
   mortgage: "Mortgage",
   heloc: "HELOC",
+  "401k_loan": "401(k) loan",
   other: "Other",
 };
 
@@ -20,85 +21,49 @@ export const DEBT_EMOJI: Record<DebtType, string> = {
   personal: "🤝",
   mortgage: "🏡",
   heloc: "🔑",
+  "401k_loan": "🌳",
   other: "📄",
 };
 
-/** Baby Step 2 is everything but the house; the mortgage is Baby Step 6. */
 export function isMortgage(d: Pick<Debt, "type">): boolean {
-  return d.type === "mortgage";
+  return d.type === "mortgage" || d.type === "heloc";
 }
 
-/** Debt snowball order: smallest balance first, interest rate ignored. Paid-off debts go last. */
-export function snowballOrder<T extends Pick<Debt, "balance" | "name">>(debts: T[]): T[] {
-  return [...debts].sort((a, b) => {
-    const aDone = a.balance <= 0, bDone = b.balance <= 0;
-    if (aDone !== bDone) return aDone ? 1 : -1;
-    return a.balance - b.balance || a.name.localeCompare(b.name);
-  });
-}
-
-export interface SnowballResult {
-  /** Months until all debts are paid; null if they never get paid off. */
-  months: number | null;
-  totalInterest: number;
-  /** Month number (1-based) each debt is paid off, by debt id. */
-  payoffMonth: Record<string, number>;
+/** 401(k) loans are repaid by payroll deduction, before the paycheck hits the bank. */
+export function isPayrollLoan(d: Pick<Debt, "type">): boolean {
+  return d.type === "401k_loan";
 }
 
 /**
- * Simulates the debt snowball: pay every minimum, then throw the extra (plus
- * each paid-off debt's minimum) at the smallest balance.
+ * Months until one loan is paid off at a fixed monthly payment, with interest
+ * compounding monthly. 0 if already paid; null if the payment never covers the
+ * interest (or there is no payment).
  */
-export function simulateSnowball(
-  debts: Pick<Debt, "id" | "name" | "balance" | "interest_rate" | "minimum_payment">[],
-  extraPerMonth: number,
-  maxMonths = 600,
-): SnowballResult {
-  const live = snowballOrder(debts.filter((d) => d.balance > 0)).map((d) => ({
-    id: d.id,
-    balance: d.balance,
-    rate: (d.interest_rate || 0) / 100 / 12,
-    min: d.minimum_payment || 0,
-  }));
-  const payoffMonth: Record<string, number> = {};
-  let totalInterest = 0;
-  const budget = live.reduce((s, d) => s + d.min, 0) + Math.max(0, extraPerMonth);
-  if (live.length === 0) return { months: 0, totalInterest: 0, payoffMonth };
-
-  for (let month = 1; month <= maxMonths; month++) {
-    for (const d of live) {
-      if (d.balance <= 0) continue;
-      const interest = d.balance * d.rate;
-      totalInterest += interest;
-      d.balance += interest;
-    }
-    let pool = budget;
-    // Minimums first...
-    for (const d of live) {
-      if (d.balance <= 0) continue;
-      const pay = Math.min(d.min, d.balance, pool);
-      d.balance -= pay;
-      pool -= pay;
-    }
-    // ...then everything left goes to the smallest balance, then the next.
-    for (const d of live) {
-      if (pool <= 0) break;
-      if (d.balance <= 0) continue;
-      const pay = Math.min(d.balance, pool);
-      d.balance -= pay;
-      pool -= pay;
-    }
-    for (const d of live) {
-      if (d.balance <= 0.005 && payoffMonth[d.id] === undefined) {
-        d.balance = 0;
-        payoffMonth[d.id] = month;
-      }
-    }
-    if (live.every((d) => d.balance <= 0)) {
-      return { months: month, totalInterest: round2(totalInterest), payoffMonth };
-    }
+export function payoffMonths(balance: number, aprPercent: number, monthlyPayment: number, maxMonths = 1200): number | null {
+  if (balance <= 0) return 0;
+  if (!monthlyPayment || monthlyPayment <= 0) return null;
+  const r = (aprPercent || 0) / 100 / 12;
+  if (r > 0 && monthlyPayment <= balance * r) return null;
+  let b = balance;
+  for (let m = 1; m <= maxMonths; m++) {
+    b = b * (1 + r) - monthlyPayment;
+    if (b <= 0.005) return m;
   }
-  return { months: null, totalInterest: round2(totalInterest), payoffMonth };
+  return null;
+}
+
+/** Interest still to pay on a loan at its monthly payment. */
+export function interestLeft(balance: number, aprPercent: number, monthlyPayment: number): number | null {
+  const months = payoffMonths(balance, aprPercent, monthlyPayment);
+  if (months === null) return null;
+  const r = (aprPercent || 0) / 100 / 12;
+  let b = balance, interest = 0;
+  for (let m = 0; m < months; m++) {
+    const i = b * r;
+    interest += i;
+    b = Math.max(0, b + i - monthlyPayment);
+  }
+  return round2(interest);
 }
 
 /** Share of the original balance already paid, 0..1. */

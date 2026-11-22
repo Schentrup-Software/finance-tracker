@@ -67,6 +67,27 @@ settings.
 3. **More people** (a spouse, say): in the dashboard, **users** → **New record**. Note
    that each user has their own separate budget, debts and assets.
 
+## Optional: OpenClaw paystub reader
+
+The app reads paystub PDFs itself. For layouts it can't read, or photos of paystubs, it can
+hand the file to an OpenClaw agent you run:
+
+1. In OpenClaw's config, turn on the OpenResponses endpoint:
+   `gateway: { http: { endpoints: { responses: { enabled: true } } } }`.
+2. In TrueNAS, edit the app's YAML and add (inside `finance-tracker:`):
+
+   ```yaml
+       environment:
+         OPENCLAW_URL: "http://<openclaw-host>:18789"
+         OPENCLAW_TOKEN: "<gateway token>"
+         # OPENCLAW_AGENT: "<agent id>"   # optional; default agent otherwise
+   ```
+
+3. Save. The paystub screen then says it can fall back to your OpenClaw agent.
+
+The paystub goes only to your own gateway, and from there to whatever model that agent
+uses. Keep the gateway on your private network.
+
 ## Updating
 
 Every push to `main` publishes a new `latest` image. In TrueNAS: **Apps** →
