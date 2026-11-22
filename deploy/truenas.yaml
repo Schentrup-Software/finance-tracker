@@ -3,26 +3,29 @@
 # Name the app "finance-tracker", paste this file, and save.
 # Full instructions: docs/truenas.md
 #
-# Before installing, create the dataset below and give the "apps" user
-# (ID 568) read/write access to it. Change the path to match your pool.
+# Change /mnt/tank/... below to a dataset on YOUR pool (Datasets shows the
+# pool's name). The container makes the folder belong to the "apps" user
+# (ID 568, set by PUID/PGID) and then runs as that user.
 
 services:
   finance-tracker:
     image: ghcr.io/schentrup-software/finance-tracker:latest
     pull_policy: always
-    user: "568:568"
     ports:
       - "30680:8080" # host:container - change the left side if 30680 is taken
     volumes:
       - /mnt/tank/apps/finance-tracker/pb_data:/pb/pb_data
-    # Optional: an OpenClaw agent reads paystubs the built-in reader can't.
-    # See docs/truenas.md. Remove the # on these three lines to turn it on.
-    # environment:
-    #   OPENCLAW_URL: "http://192.168.1.20:18789"
-    #   OPENCLAW_TOKEN: "your-gateway-token"
+    environment:
+      PUID: "568"
+      PGID: "568"
+      # Optional: an OpenClaw agent reads paystubs the built-in reader can't.
+      # See docs/truenas.md. Remove the # on these two lines to turn it on.
+      # OPENCLAW_URL: "http://192.168.1.20:18789"
+      # OPENCLAW_TOKEN: "your-gateway-token"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 60s
     restart: unless-stopped

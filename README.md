@@ -46,8 +46,9 @@ built app on port 8080. Every push to `main` publishes
 
 On first visit the app offers **Create account**; that becomes your login and makes you
 head of the household, and sign-up then closes. The head adds the rest of the household
-on the **Household** page (people button, top right); everyone shares the same data. For the PocketBase admin dashboard (`/_/`), create a superuser with
-`/pb/pocketbase superuser upsert <email> <password> --dir=/pb/pb_data` inside the
+on the **Household** page (people button, top right); everyone shares the same data.
+For the PocketBase admin dashboard (`/_/`), create a superuser with
+`su-exec 568:568 /pb/pocketbase superuser upsert <email> <password> --dir=/pb/pb_data` inside the
 container. The schema in `pb_migrations/` is applied automatically on start.
 
 ## Develop

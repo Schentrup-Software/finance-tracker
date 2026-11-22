@@ -6,14 +6,16 @@ keeps all data in one folder that you put on a dataset.
 
 ## 1. Make a dataset for the data
 
-1. **Datasets** → pick your pool (these steps use `tank`) → **Add Dataset**. Name it
-   `apps/finance-tracker/pb_data`, or make `apps/finance-tracker` first and `pb_data` inside
-   it. The **Apps** preset is fine.
-2. Give the `apps` user (ID 568) read and write access: select the dataset →
-   **Permissions** → **Edit** → set **Owner (user)** and **Owner (group)** to `apps`, tick
-   **Apply User** and **Apply Group**, and save.
+1. **Datasets** → pick your pool (these steps use `tank`; use your pool's name) →
+   **Add Dataset**. Name it `apps/finance-tracker/pb_data`, or make `apps/finance-tracker`
+   first and `pb_data` inside it. The **Apps** preset is fine.
+2. Note the dataset's full path, e.g. `/mnt/tank/apps/finance-tracker/pb_data`. You paste it
+   into the YAML next.
 
-The container runs as `apps` (`user: "568:568"` in the YAML), so it can only write here.
+On start, the container makes this folder belong to the `apps` user (ID 568) and then runs
+PocketBase as that user. If the dataset's ACL doesn't allow that, give `apps` read/write
+access yourself: select the dataset → **Permissions** → **Edit** → set **Owner (user)** and
+**Owner (group)** to `apps`, tick **Apply User** and **Apply Group**, and save.
 
 ## 2. Install the app
 
@@ -26,16 +28,19 @@ The container runs as `apps` (`user: "568:568"` in the YAML), so it can only wri
      finance-tracker:
        image: ghcr.io/schentrup-software/finance-tracker:latest
        pull_policy: always
-       user: "568:568"
        ports:
          - "30680:8080"
        volumes:
          - /mnt/tank/apps/finance-tracker/pb_data:/pb/pb_data
+       environment:
+         PUID: "568"
+         PGID: "568"
        healthcheck:
          test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
          interval: 30s
          timeout: 5s
          retries: 3
+         start_period: 60s
        restart: unless-stopped
    ```
 
@@ -60,7 +65,7 @@ settings.
    **Shell** button, then run:
 
    ```sh
-   /pb/pocketbase superuser upsert you@example.com 'a-long-password' --dir=/pb/pb_data
+   su-exec 568:568 /pb/pocketbase superuser upsert you@example.com 'a-long-password' --dir=/pb/pb_data
    ```
 
    (The container log also prints a one-time setup link. It says `0.0.0.0:8080`; replace
@@ -70,6 +75,25 @@ settings.
    household shares the same budget, debts and assets. Only the head adds, removes or
    resets the password of people. (A user a superuser makes in the dashboard starts a
    separate household of their own.)
+
+## Troubleshooting: stuck on "Deploying", then "Stopped"
+
+The container started and then exited before PocketBase was up. To see why, open
+**Apps** → `finance-tracker` → **Workloads** → the container's **Logs** button (the page
+icon). Logs only exist once the container has run, so if it's empty, click **Start**,
+wait a few seconds and open the logs again. Lines from the app start with `finance-tracker:`.
+
+- **"user 568 can't write to /pb/pb_data"**, or a PocketBase error mentioning
+  `permission denied` and `pb_data`: the `apps` user can't write to the dataset. Give `apps`
+  read/write access as in step 1, or remove the `user: "568:568"` line if your YAML still has
+  it (older copies did). The container then fixes the folder's owner itself.
+- **The path in `volumes:` doesn't exist**, for example your pool isn't called `tank`.
+  Docker then makes an empty root-owned folder there, which isn't your dataset. Check
+  **Datasets** for the real path, fix it in the YAML (**Apps** → `finance-tracker` →
+  **Edit**), and save.
+- **The port is taken**: change the left number in `ports:`.
+- **Old image**: `pull_policy: always` fetches the newest image on every start. **Edit** →
+  **Save** without changes also pulls it again.
 
 ## Optional: OpenClaw paystub reader
 
