@@ -5,18 +5,74 @@
 
 // ---------- Accounts ----------
 
-// The first account can be created from the app's sign-up screen. After that,
-// sign-up is closed, and new accounts can only be made by a superuser in the
-// admin dashboard (/_/). This keeps a self-hosted instance private.
+// The first account can be created from the app's sign-up screen and becomes the
+// head of a household. After that, sign-up is closed: the head adds the rest of the
+// household from the app (/api/household/members). This keeps an instance private.
 onRecordCreateRequest((e) => {
   if (!e.hasSuperuserAuth()) {
     const total = e.app.countRecords("users");
     if (total > 0) {
-      throw new ForbiddenError("Sign-up is closed. Ask the owner to add you from the admin dashboard.");
+      throw new ForbiddenError("Sign-up is closed. Ask the head of your household to add you.");
     }
+    e.record.set("household", "");
   }
   e.next();
 }, "users");
+
+// A user created without a household (the first sign-up, or one a superuser makes
+// in the dashboard) heads a new household of their own.
+onRecordCreate((e) => {
+  e.next();
+  if (!e.record.get("household")) {
+    e.app.db().newQuery("UPDATE users SET household = {:id}, emailVisibility = TRUE WHERE id = {:id}").bind({ id: e.record.id }).execute();
+    e.record.set("household", e.record.id);
+  }
+}, "users");
+
+// ---------- Household members (the head manages them) ----------
+
+// POST /api/household/members  { "email", "password", "name" }
+routerAdd("POST", "/api/household/members", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  const head = lib.requireHead(e.auth);
+  const body = e.requestInfo().body || {};
+  const user = new Record(e.app.findCollectionByNameOrId("users"));
+  user.set("email", String(body.email || "").trim());
+  user.set("name", String(body.name || "").trim());
+  user.setPassword(String(body.password || ""));
+  user.set("verified", true);
+  user.set("emailVisibility", true); // visible only inside the household (users list rule)
+  user.set("household", head);
+  try {
+    e.app.save(user);
+  } catch (err) {
+    throw new BadRequestError("Couldn't add that person: " + err);
+  }
+  return e.json(200, { id: user.id, email: user.email(), name: user.get("name") });
+}, $apis.requireAuth("users"));
+
+// POST /api/household/members/{id}/password  { "password" }
+routerAdd("POST", "/api/household/members/{id}/password", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  const head = lib.requireHead(e.auth);
+  const user = lib.findMember(e.app, head, e.request.pathValue("id"));
+  user.setPassword(String((e.requestInfo().body || {}).password || ""));
+  try {
+    e.app.save(user);
+  } catch (err) {
+    throw new BadRequestError("Couldn't set that password: " + err);
+  }
+  return e.json(200, { ok: true });
+}, $apis.requireAuth("users"));
+
+// DELETE /api/household/members/{id}: the member's sign-in goes away; the shared data stays.
+routerAdd("DELETE", "/api/household/members/{id}", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  const head = lib.requireHead(e.auth);
+  const user = lib.findMember(e.app, head, e.request.pathValue("id"));
+  e.app.delete(user);
+  return e.json(200, { ok: true });
+}, $apis.requireAuth("users"));
 
 // Lets the app ask whether sign-up is still open, to show the right screen.
 routerAdd("GET", "/api/finance/setup", (e) => {
@@ -25,12 +81,13 @@ routerAdd("GET", "/api/finance/setup", (e) => {
 
 // ---------- Owner ----------
 
-// API clients (n8n) may leave `owner` out when creating a record; it is filled
-// in from the auth token. The collection rules already reject any other owner.
+// Records belong to the household: `owner` is the head of the signed-in user's
+// household. API clients (n8n) may leave it out; it is filled in from the auth
+// token. The collection rules already reject any other owner.
 onRecordCreateRequest(
   (e) => {
     if (!e.record.get("owner") && e.auth && e.auth.collection().name === "users") {
-      e.record.set("owner", e.auth.id);
+      e.record.set("owner", e.auth.get("household") || e.auth.id);
     }
     e.next();
   },
@@ -190,7 +247,7 @@ routerAdd(
     const lib = require(`${__hooks}/finance/lib.js`);
     const collection = e.request.pathValue("collection");
     const body = e.requestInfo().body || {};
-    const result = lib.upsert(e.app, collection, e.auth.id, body.records);
+    const result = lib.upsert(e.app, collection, lib.householdOf(e.auth), body.records);
     return e.json(200, result);
   },
   $apis.requireAuth("users"),
@@ -203,12 +260,12 @@ routerAdd("GET", "/api/finance/balances", (e) => {
   const lib = require(`${__hooks}/finance/lib.js`);
   const month = e.request.url.query().get("month") || "";
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new BadRequestError("Pass ?month=YYYY-MM.");
-  return e.json(200, lib.envelopeBalances(e.app, e.auth.id, month));
+  return e.json(200, lib.envelopeBalances(e.app, lib.householdOf(e.auth), month));
 }, $apis.requireAuth("users"));
 
 // POST /api/import/budgets  { "months": [ { month, planned_income, allocations: [ { envelope_external_id, amount } ] } ] }
 routerAdd("POST", "/api/import/budgets", (e) => {
   const lib = require(`${__hooks}/finance/lib.js`);
   const body = e.requestInfo().body || {};
-  return e.json(200, lib.importBudgets(e.app, e.auth.id, body.months));
+  return e.json(200, lib.importBudgets(e.app, lib.householdOf(e.auth), body.months));
 }, $apis.requireAuth("users"), $apis.bodyLimit(5 << 20));

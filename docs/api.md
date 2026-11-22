@@ -10,9 +10,10 @@ so they show on the same day in every time zone.
 
 ## 1. Authenticate
 
-Every data endpoint needs a user token in the `Authorization` header. Each record
-belongs to one user (`owner`), and the API only ever shows or changes that user's
-records, so n8n must sign in **as the same user you use in the app**.
+Every data endpoint needs a user token in the `Authorization` header. Data belongs to a
+**household**: each record's `owner` is the head of the household, and every member of
+the household sees and changes the same records. n8n can sign in as any member of your
+household (a member just for n8n works well).
 
 ### Option A: sign in with a password (simple)
 
@@ -244,7 +245,25 @@ Other endpoints:
 
 ## 4. Collections
 
-Every collection also has `id`, `owner` (user id), `created` and `updated`.
+Every collection also has `id`, `owner` (the household: its head's user id), `created`
+and `updated`.
+
+### `users` — people who sign in
+
+| Field | Type | |
+| --- | --- | --- |
+| `email`, `name` | text | Members of a household can see each other |
+| `household` | relation → users | The head of the user's household; the head points at themself. Read-only through the API |
+
+Household members are managed by the head:
+
+| Method | Path | Body | |
+| --- | --- | --- | --- |
+| `POST` | `/api/household/members` | `{ "email", "name", "password" }` | Adds a person to the head's household |
+| `POST` | `/api/household/members/{id}/password` | `{ "password" }` | Sets a member's password |
+| `DELETE` | `/api/household/members/{id}` | | Removes a member's sign-in. The household's data stays |
+
+Anyone else gets `403` (not the head) or `404` (not in your household).
 
 ### `envelopes` — the cash envelopes
 
@@ -262,13 +281,13 @@ Every collection also has `id`, `owner` (user id), `created` and `updated`.
 | `goal` | number ≥ 0 | Yearly goal for annual envelopes |
 | `opening_balance` | number | Cash in the envelope at the end of `opening_date`. Set by an import |
 | `opening_date` | date | Balances count from here; earlier months show spending only |
-| `external_id` | text | Unique per user |
+| `external_id` | text | Unique per household |
 
 ### `budgets` — one per month
 
 | Field | Type | |
 | --- | --- | --- |
-| `month` | text `YYYY-MM`, required | Unique per user |
+| `month` | text `YYYY-MM`, required | Unique per household |
 | `planned_income` | number | Expected take-home pay |
 | `notes` | text | |
 | `imported` | bool | Created by an import. A new month copies envelope amounts from the last month that wasn't imported |
@@ -297,7 +316,7 @@ Envelope cash left = allocation (+ carried, for rollover envelopes) − the mont
 | `payee` | text | |
 | `note` | text | |
 | `account` | text | Bank or card account, e.g. `Visa` |
-| `external_id` | text | Unique per user |
+| `external_id` | text | Unique per household |
 
 ### `debts`
 
@@ -312,7 +331,7 @@ Envelope cash left = allocation (+ carried, for rollover envelopes) − the mont
 | `minimum_payment` | number | Monthly payment; the payoff date is worked out from it and the APR |
 | `due_day` | number 1–31 | |
 | `notes` | text | |
-| `external_id` | text | Unique per user |
+| `external_id` | text | Unique per household |
 
 ### `debt_payments`
 
@@ -322,7 +341,7 @@ Envelope cash left = allocation (+ carried, for rollover envelopes) − the mont
 | `date` | date, required | |
 | `amount` | number ≥ 0, required | Lowers the debt's balance |
 | `note` | text | |
-| `external_id` | text | Unique per user |
+| `external_id` | text | Unique per household |
 
 ### `assets`
 
@@ -335,7 +354,7 @@ Envelope cash left = allocation (+ carried, for rollover envelopes) − the mont
 | `as_of` | date | When the value was last checked |
 | `debts` | relation → debts (many) | Debts tied to this asset; equity = value − their balances |
 | `notes` | text | |
-| `external_id` | text | Unique per user |
+| `external_id` | text | Unique per household |
 
 ### `earners` — each paycheck in the household
 
@@ -346,7 +365,7 @@ Envelope cash left = allocation (+ carried, for rollover envelopes) − the mont
 | `color` | same values as envelopes | |
 | `pay_frequency` | `weekly` `biweekly` `semimonthly` `monthly` | |
 | `archived` | bool | |
-| `external_id` | text | Unique per user |
+| `external_id` | text | Unique per household |
 
 ### `paystubs`
 
@@ -361,7 +380,7 @@ Envelope cash left = allocation (+ carried, for rollover envelopes) − the mont
 | `source` | `upload` `manual` `repeat` | `repeat` = copied by the server |
 | `transaction` | relation → transactions | The deposit it explains |
 | `notes` | text | |
-| `external_id` | text | Unique per user |
+| `external_id` | text | Unique per household |
 
 ### `paystub_lines`
 

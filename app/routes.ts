@@ -7,5 +7,6 @@ export default [
     route("/budget", "routes/budget.tsx"),
     route("/debts", "routes/debts.tsx"),
     route("/assets", "routes/assets.tsx"),
+    route("/household", "routes/household.tsx"),
   ]),
 ] satisfies RouteConfig;

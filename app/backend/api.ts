@@ -16,6 +16,18 @@ export function currentUserEmail(): string {
   return (pb.authStore.record?.email as string | undefined) ?? "";
 }
 
+/** The household the signed-in user belongs to. Its id is the head's user id, and owns all the data. */
+function householdId(): string {
+  const r = pb.authStore.record;
+  return (r?.household as string | undefined) || r?.id || "";
+}
+
+/** Whether the signed-in user is the head of their household (who manages its members). */
+export function isHouseholdHead(): boolean {
+  const r = pb.authStore.record;
+  return !!r && householdId() === r.id;
+}
+
 export async function signupOpen(): Promise<boolean> {
   try {
     const res = await pb.send<{ signupOpen: boolean }>("/api/finance/setup", { method: "GET" });
@@ -65,7 +77,7 @@ function list<T>(name: Name, options: { filter?: string; sort?: string } = {}) {
 }
 
 function create<T extends BaseRecord>(name: Name, data: Draft<T>) {
-  return pb.collection(name).create<T>({ ...data, owner: pb.authStore.record?.id });
+  return pb.collection(name).create<T>({ ...data, owner: householdId() });
 }
 
 function update<T extends BaseRecord>(name: Name, id: string, data: Draft<T>) {
@@ -182,6 +194,44 @@ export const createEnvelope = (d: Draft<Envelope>) => create<Envelope>("envelope
 export const updateEnvelope = (id: string, d: Draft<Envelope>) => update<Envelope>("envelopes", id, d);
 export const deleteEnvelope = (id: string) => remove("envelopes", id);
 
+// ---------- Household ----------
+
+export interface Member {
+  id: string;
+  email: string;
+  name: string;
+  isHead: boolean;
+  isMe: boolean;
+}
+
+/** Everyone in the signed-in user's household, head first. */
+export async function listHousehold(): Promise<Member[]> {
+  const me = pb.authStore.record?.id;
+  const head = householdId();
+  const users = await pb.collection("users").getFullList<{ id: string; email?: string; name?: string }>({ sort: "created" });
+  return users
+    .map((u) => ({ id: u.id, email: u.email ?? "", name: u.name ?? "", isHead: u.id === head, isMe: u.id === me }))
+    .sort((a, b) => Number(b.isHead) - Number(a.isHead));
+}
+
+export function addMember(member: { email: string; name: string; password: string }) {
+  return pb.send<{ id: string }>("/api/household/members", { method: "POST", body: member });
+}
+
+export function setMemberPassword(id: string, password: string) {
+  return pb.send(`/api/household/members/${id}/password`, { method: "POST", body: { password } });
+}
+
+export function removeMember(id: string) {
+  return pb.send(`/api/household/members/${id}`, { method: "DELETE" });
+}
+
+/** Changes the signed-in user's own name. */
+export async function updateMyName(name: string) {
+  const id = pb.authStore.record?.id;
+  if (id) await pb.collection("users").update(id, { name });
+}
+
 // ---------- Import ----------
 
 /** Upserts records by external_id through the sync endpoint, in batches of 500. */
@@ -296,7 +346,7 @@ export async function savePaystub(
   const form = new FormData();
   for (const [k, v] of Object.entries(data)) if (v !== undefined && v !== null) form.append(k, String(v));
   if (file) form.append("file", file);
-  if (!existing) form.append("owner", pb.authStore.record?.id ?? "");
+  if (!existing) form.append("owner", householdId());
   const paystub = existing
     ? await pb.collection("paystubs").update<Paystub>(existing.id, form)
     : await pb.collection("paystubs").create<Paystub>(form);

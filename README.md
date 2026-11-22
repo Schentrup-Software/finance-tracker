@@ -44,8 +44,10 @@ built app on port 8080. Every push to `main` publishes
 - **Any Docker host:** `docker compose up --build -d`, then open `http://localhost:30680`.
   Data is kept in `./pb_data`; back that folder up.
 
-On first visit the app offers **Create account**; that becomes your login, and sign-up
-then closes. For the PocketBase admin dashboard (`/_/`), create a superuser with
+On first visit the app offers **Create account**; that becomes your login and makes you
+head of the household, and sign-up then closes. The head adds the rest of the household
+on the **Household** page (people button, top right); everyone shares the same data.
+For the PocketBase admin dashboard (`/_/`), create a superuser with
 `su-exec 568:568 /pb/pocketbase superuser upsert <email> <password> --dir=/pb/pb_data` inside the
 container. The schema in `pb_migrations/` is applied automatically on start.
 
@@ -78,7 +80,7 @@ app/
   lib/           budget, loan payoff, asset and paystub-reading logic (unit tested)
   components/    shared UI (ui.tsx), envelope art, logo
 pb_migrations/   collections, fields and API rules
-pb_hooks/        sign-up lock, owner fill-in, debt balances, paycheck matching, /api/sync, paystub reader fallback
+pb_hooks/        sign-up lock, households, owner fill-in, debt balances, paycheck matching, /api/sync, paystub reader fallback
 docs/api.md      API reference for n8n
 docs/truenas.md  TrueNAS install guide (deploy/truenas.yaml)
 ```

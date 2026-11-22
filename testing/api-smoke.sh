@@ -116,5 +116,26 @@ check "another user can't import into my envelopes" "$(j -H "$OTHER" -X POST "$B
 check "another user doesn't see my balances" "$(j -H "$OTHER" "$B/api/finance/balances?month=2031-12" | field '["carried"]')" "{}"
 check "balances need a sign-in" "$(j "$B/api/finance/balances?month=2031-12" | field '["status"]')" "401"
 
+# Households: the head adds members, and everyone in the household shares the data
+ADDED=$(j -H "$A" -X POST "$B/api/household/members" -d "{\"email\":\"m-$RUN@smoke.test\",\"name\":\"Brie\",\"password\":\"password123\"}")
+check "the head adds a household member" "$(echo "$ADDED" | field '["name"]')" "Brie"
+MEMBER_ID=$(echo "$ADDED" | field '["id"]')
+M="Authorization: $(j -X POST "$B/api/collections/users/auth-with-password" -d "{\"identity\":\"m-$RUN@smoke.test\",\"password\":\"password123\"}" | field '["token"]')"
+check "a member sees the household's envelopes" "$(j -H "$M" "$B/api/collections/envelopes/records/$ENV" | field '["name"]')" "Groceries"
+MENV=$(j -H "$M" -X POST "$B/api/collections/envelopes/records" -d '{"name":"Date night"}' | field '["id"]')
+check "a member's new envelope belongs to the household" "$(j -H "$A" "$B/api/collections/envelopes/records/$MENV" | field '["name"]')" "Date night"
+check "a member can spend from a shared envelope" "$(j -H "$M" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"expense\",\"envelope\":\"$ENV\",\"date\":\"2026-11-21\",\"amount\":5}" | field '["kind"]')" "expense"
+check "a member's sync writes to the household" "$(j -H "$M" -X POST "$B/api/sync/envelopes" -d '{"records":[{"external_id":"env-gas","name":"Gas"}]}' | field '["updated"]')" "1"
+check "a member sees the head in the household list" "$(j -H "$M" "$B/api/collections/users/records" | field '["totalItems"]')" "2"
+check "another household still sees nothing" "$(j -H "$OTHER" "$B/api/collections/envelopes/records/$MENV" | field '["status"]')" "404"
+check "another household can't see our members" "$(j -H "$OTHER" "$B/api/collections/users/records" | field '["totalItems"]')" "1"
+check "a member can't add people" "$(j -H "$M" -X POST "$B/api/household/members" -d '{"email":"x@smoke.test","password":"password123"}' | field '["status"]')" "403"
+check "a member can't move themself to another household" "$(j -H "$M" -X PATCH "$B/api/collections/users/records/$MEMBER_ID" -d "{\"household\":\"$MEMBER_ID\"}" | field '["status"]')" "404"
+check "another head can't remove our member" "$(j -H "$OTHER" -X DELETE "$B/api/household/members/$MEMBER_ID" | field '["status"]')" "404"
+check "the head resets a member's password" "$(j -H "$A" -X POST "$B/api/household/members/$MEMBER_ID/password" -d '{"password":"newpassword456"}' | field '["ok"]')" "True"
+check "the head removes a member" "$(j -H "$A" -X DELETE "$B/api/household/members/$MEMBER_ID" | field '["ok"]')" "True"
+check "a removed member can't sign in" "$(j -X POST "$B/api/collections/users/auth-with-password" -d "{\"identity\":\"m-$RUN@smoke.test\",\"password\":\"newpassword456\"}" | field '["status"]')" "400"
+check "their envelope stays with the household" "$(j -H "$A" "$B/api/collections/envelopes/records/$MENV" | field '["name"]')" "Date night"
+
 echo
 [ "$FAILS" -eq 0 ] && echo "All API checks passed." || { echo "$FAILS check(s) failed."; exit 1; }

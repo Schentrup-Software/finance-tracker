@@ -590,7 +590,35 @@ function importBudgets(app, ownerId, months) {
   return result;
 }
 
+// ---------- Households ----------
+
+/** The id that owns the signed-in user's data: the head of their household. */
+function householdOf(auth) {
+  return (auth && (auth.get("household") || auth.id)) || "";
+}
+
+/** Only the head of a household manages its members. Returns the head's id. */
+function requireHead(auth) {
+  if (!auth || householdOf(auth) !== auth.id) {
+    throw new ForbiddenError("Only the head of the household can do that.");
+  }
+  return auth.id;
+}
+
+/** A member of the head's household (never the head), or a 404. */
+function findMember(app, headId, id) {
+  let user = null;
+  try {
+    user = app.findRecordById("users", id);
+  } catch (_) {}
+  if (!user || user.id === headId || user.get("household") !== headId) {
+    throw new NotFoundError("That person isn't in your household.");
+  }
+  return user;
+}
+
 module.exports = {
+  householdOf, requireHead, findMember,
   envelopeBalances, importBudgets,
   agentConfig, readPaystubWithAgent, adjustAssetValue, payDateOf,
   OWNED, SYNCABLE, upsert, adjustDebtBalance,
