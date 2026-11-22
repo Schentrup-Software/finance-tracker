@@ -204,7 +204,12 @@ test("import history from a spreadsheet, with annual envelopes", async ({ page }
   await d.getByRole("radiogroup", { name: "Christmas type", exact: true }).getByRole("radio", { name: "Annual" }).click();
   await d.getByLabel("Christmas yearly goal", { exact: true }).fill("3600");
   await d.getByLabel("Christmas balance", { exact: true }).fill("4210");
-  await d.getByLabel("Extra balance", { exact: true }).fill("573.74");
+  // Typed key by key, like a person: the box keeps focus between keys.
+  const extra = d.getByLabel("Extra balance", { exact: true });
+  await extra.click();
+  await extra.pressSequentially("573.74");
+  await expect(extra).toHaveValue("573.74");
+  await expect(extra).toBeFocused();
   await d.getByLabel("Vacation monthly amount", { exact: true }).fill("500");
   await d.getByLabel("Vacation balance", { exact: true }).fill("391.04");
   await shot(page, "08-import-preview");
