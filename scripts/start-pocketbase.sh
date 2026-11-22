@@ -7,7 +7,7 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PB_VERSION="${PB_VERSION:-0.28.2}"
+PB_VERSION="${PB_VERSION:-0.40.6}"
 PB_DIR="$ROOT/.local-pocketbase"
 PB_DATA="$PB_DIR/pb_data"
 PB_BIN="$PB_DIR/pocketbase"
@@ -19,12 +19,13 @@ case "$(uname -s)" in Darwin) OS=darwin ;; *) OS=linux ;; esac
 case "$(uname -m)" in arm64|aarch64) ARCH=arm64 ;; *) ARCH=amd64 ;; esac
 
 mkdir -p "$PB_DIR"
-if [ ! -x "$PB_BIN" ]; then
+if [ ! -x "$PB_BIN" ] || [ "$(cat "$PB_DIR/version" 2>/dev/null)" != "$PB_VERSION" ]; then
   echo "Downloading PocketBase v$PB_VERSION ($OS/$ARCH)..."
   curl -fsSL "https://github.com/pocketbase/pocketbase/releases/download/v${PB_VERSION}/pocketbase_${PB_VERSION}_${OS}_${ARCH}.zip" -o "$PB_DIR/pb.zip"
   unzip -o -q "$PB_DIR/pb.zip" pocketbase -d "$PB_DIR"
   rm "$PB_DIR/pb.zip"
   chmod +x "$PB_BIN"
+  echo "$PB_VERSION" > "$PB_DIR/version"
 fi
 
 pkill -f "pocketbase serve.*8090" 2>/dev/null || true

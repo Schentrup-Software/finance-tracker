@@ -6,7 +6,7 @@ COPY . .
 RUN npm run build
 
 FROM alpine:latest
-ARG PB_VERSION=0.28.2
+ARG PB_VERSION=0.40.6
 ARG TARGETARCH=amd64
 
 RUN apk add --no-cache unzip ca-certificates

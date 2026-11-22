@@ -26,7 +26,7 @@ n8n workflow can sync balances and transactions. See **[docs/api.md](docs/api.md
 ## Stack
 
 Same as [shear-madness](https://github.com/Schentrup-Software/shear-madness): React 19,
-React Router 7 (SPA mode), TypeScript, Tailwind 3, Vite, and PocketBase 0.28 as the
+React Router 7 (SPA mode), TypeScript, Tailwind 3, Vite, and PocketBase 0.40 as the
 backend. Styling follows [toddler-games](https://github.com/Schentrup-Software/toddler-games).
 
 ## Run it
