@@ -7,12 +7,13 @@ import {
 } from "~/backend/api";
 import { ENVELOPE_GROUPS, type Color, type Earner, type Envelope, type EnvelopeGroup, type TransactionKind } from "~/backend/types";
 import { EnvelopeArt } from "~/components/EnvelopeArt";
+import { ImportHistory } from "~/components/ImportHistory";
 import { Paychecks } from "~/components/Paychecks";
 import {
   Button, Card, ColorPicker, EmptyState, ErrorNote, FormActions, Icon, Meter, Modal, MoneyInput,
   RoundButton, SectionTitle, Select, Stat, TextInput, Toggle, cx,
 } from "~/components/ui";
-import { GROUP_LABELS, STARTER_ENVELOPES, summarize, type EnvelopeSummary } from "~/lib/budget";
+import { GROUP_LABELS, STARTER_ENVELOPES, isAnnual, monthlyToGoal, summarize, type EnvelopeSummary } from "~/lib/budget";
 import { monthLabel, monthOf, nextMonth, shortDate, todayISO } from "~/lib/dates";
 import { money, parseMoney } from "~/lib/money";
 
@@ -47,7 +48,8 @@ export default function BudgetPage() {
   useEffect(() => subscribeAll(["envelopes", "budgets", "allocations", "transactions"], reload), [reload]);
 
   const summary = useMemo(
-    () => data && summarize(data.envelopes, data.allocations, data.transactions, data.carried, data.budget?.planned_income ?? 0),
+    () => data && summarize(data.envelopes, data.allocations, data.transactions, data.carried,
+      data.budget?.planned_income ?? 0, month, data.yearSpent),
     [data],
   );
 
@@ -55,6 +57,7 @@ export default function BudgetPage() {
   const [editing, setEditing] = useState<Envelope | "new" | null>(null);
   const [adding, setAdding] = useState<TransactionKind | null>(null);
   const [editIncome, setEditIncome] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const sorted = useMemo(() => {
     if (!summary) return [];
@@ -63,6 +66,8 @@ export default function BudgetPage() {
       a.envelope.sort - b.envelope.sort || a.envelope.name.localeCompare(b.envelope.name));
   }, [summary]);
 
+  const monthly = sorted.filter((s) => !isAnnual(s.envelope));
+  const annual = sorted.filter((s) => isAnnual(s.envelope));
   const selected = summary?.envelopes.find((e) => e.envelope.id === openEnvelope) ?? null;
 
   return (
@@ -83,7 +88,8 @@ export default function BudgetPage() {
       {!data ? (
         <div className="py-20 text-center text-5xl"><span className="bob inline-block">✉️</span></div>
       ) : !data.budget ? (
-        <StartMonth month={month} hasEnvelopes={data.envelopes.some((e) => !e.archived)} onStarted={reload} />
+        <StartMonth month={month} hasEnvelopes={data.envelopes.some((e) => !e.archived)} onStarted={reload}
+          onImport={() => setImporting(true)} />
       ) : summary && (
         <>
           <SummaryRow summary={summary} onEditIncome={() => setEditIncome(true)} />
@@ -91,7 +97,7 @@ export default function BudgetPage() {
           <Paychecks month={month} />
 
           <SectionTitle action={
-            <div className="flex gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <Button small color="mint" onClick={() => setAdding("expense")}><Icon name="cash" className="h-5 w-5" /> Spend</Button>
               <Button small color="butter" onClick={() => setAdding("income")}><Icon name="plus" className="h-5 w-5" /> Income</Button>
             </div>
@@ -103,15 +109,15 @@ export default function BudgetPage() {
             </EmptyState>
           ) : null}
 
-          <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-4">
-            {sorted.map((s, i) => (
-              <EnvelopeCard key={s.envelope.id} s={s} index={i} onOpen={() => setOpenEnvelope(s.envelope.id)} />
-            ))}
-            <button type="button" onClick={() => setEditing("new")}
-              className="tray pop-in flex min-h-[220px] flex-col items-center justify-center gap-2 font-black opacity-80 hover:opacity-100"
-              style={{ ["--i" as any]: sorted.length }}>
-              <span className="round-btn"><Icon name="plus" /></span>
-              New envelope
+          <EnvelopeGroup title={annual.length ? "Monthly" : null} items={monthly} offset={0}
+            onOpen={setOpenEnvelope} onNew={() => setEditing("new")} />
+          {annual.length > 0 && (
+            <EnvelopeGroup title="Annual" items={annual} offset={monthly.length} onOpen={setOpenEnvelope} />
+          )}
+
+          <div className="mt-4 text-right">
+            <button className="btn-ghost text-sm" onClick={() => setImporting(true)}>
+              <Icon name="plus" className="h-4 w-4" /> Import history from a spreadsheet
             </button>
           </div>
 
@@ -135,6 +141,8 @@ export default function BudgetPage() {
           onClose={() => setAdding(null)} onSaved={reload} />
       )}
 
+      <ImportHistory open={importing} onClose={() => setImporting(false)} onDone={reload} />
+
       {data?.budget && (
         <IncomeForm open={editIncome} budgetId={data.budget.id} value={data.budget.planned_income}
           onClose={() => setEditIncome(false)} onSaved={reload} />
@@ -145,7 +153,9 @@ export default function BudgetPage() {
 
 // ---------- Starting a month ----------
 
-function StartMonth({ month, hasEnvelopes, onStarted }: { month: string; hasEnvelopes: boolean; onStarted: () => void }) {
+function StartMonth({ month, hasEnvelopes, onStarted, onImport }: {
+  month: string; hasEnvelopes: boolean; onStarted: () => void; onImport: () => void;
+}) {
   const [income, setIncome] = useState("");
   const [starters, setStarters] = useState(!hasEnvelopes);
   const [busy, setBusy] = useState(false);
@@ -187,6 +197,9 @@ function StartMonth({ month, hasEnvelopes, onStarted }: { month: string; hasEnve
         <ErrorNote message={error} />
         <button className="btn c-mint w-full" disabled={busy}>{busy ? "Setting up…" : "Start budget"}</button>
       </form>
+      {!hasEnvelopes && (
+        <button className="btn-ghost mt-4 text-sm" onClick={onImport}>Or import your history from a spreadsheet</button>
+      )}
     </Card>
   );
 }
@@ -220,28 +233,78 @@ function SummaryRow({ summary, onEditIncome }: { summary: ReturnType<typeof summ
 
 // ---------- Envelope card ----------
 
+function EnvelopeGroup({ title, items, offset, onOpen, onNew }: {
+  title: string | null; items: EnvelopeSummary[]; offset: number; onOpen: (id: string) => void; onNew?: () => void;
+}) {
+  const total = items.reduce((sum, s) => sum + (s.historyOnly ? 0 : s.left), 0);
+  return (
+    <section className={title ? "mt-6" : ""} aria-label={title ?? "Envelopes"}>
+      {title && (
+        <div className="mb-3 flex items-baseline justify-between px-1">
+          <h3 className="text-lg font-black">{title}</h3>
+          {items.some((s) => !s.historyOnly) && (
+            <span className="num font-black opacity-80" title="Cash in these envelopes">{money(total, { cents: true })}</span>
+          )}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-4">
+        {items.map((s, i) => (
+          <EnvelopeCard key={s.envelope.id} s={s} index={offset + i} onOpen={() => onOpen(s.envelope.id)} />
+        ))}
+        {onNew && (
+          <button type="button" onClick={onNew}
+            className="tray pop-in flex min-h-[220px] flex-col items-center justify-center gap-2 font-black opacity-80 hover:opacity-100"
+            style={{ ["--i" as any]: offset + items.length }}>
+            <span className="round-btn"><Icon name="plus" /></span>
+            New envelope
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function EnvelopeCard({ s, index, onOpen }: { s: EnvelopeSummary; index: number; onOpen: () => void }) {
   const color = (s.envelope.color || "lilac") as Color;
   const over = s.left < 0;
+  const annual = isAnnual(s.envelope);
+  const of = annual && s.envelope.goal ? s.envelope.goal : s.planned + s.carried + s.added;
   return (
     <button type="button" onClick={onOpen}
       className={cx("chunk chunk-press pop-in flex flex-col items-stretch p-4 text-left", `c-${color}`, s.envelope.archived && "opacity-60")}
       style={{ ["--i" as any]: index }}
-      aria-label={`${s.envelope.name}: ${money(s.left)} left of ${money(s.planned + s.carried)}`}>
+      aria-label={s.historyOnly ? `${s.envelope.name}: ${money(s.spent)} spent` : `${s.envelope.name}: ${money(s.left)} left of ${money(of)}`}>
       <div className="flex items-center justify-between gap-2">
         <span className="truncate text-lg font-black">
           {s.envelope.emoji && <span className="mr-1" aria-hidden="true">{s.envelope.emoji}</span>}
           {s.envelope.name}
         </span>
-        {s.envelope.rollover && <span className="pill c-white text-[10px]" title="Leftover cash rolls into next month">ROLLS</span>}
+        {annual
+          ? <span className="pill c-white text-[10px]" title="Saves toward a yearly goal">YEARLY</span>
+          : s.envelope.rollover && <span className="pill c-white text-[10px]" title="Leftover cash rolls into next month">ROLLS</span>}
       </div>
-      <div className="mx-auto mt-2 w-[78%]"><EnvelopeArt fullness={s.fullness} overspent={over} /></div>
+      <div className="mx-auto mt-2 w-[78%]"><EnvelopeArt fullness={s.historyOnly ? 0 : s.fullness} overspent={over && !s.historyOnly} /></div>
       <div className="mt-2 text-center">
-        <div className={cx("num text-2xl font-black", over && "text-[#c45c5c]")}>{money(s.left)}</div>
-        <div className="text-xs font-extrabold opacity-75">
-          {over ? "overspent" : "left"} of {money(s.planned + s.carried)}
-          {s.carried !== 0 && <> · {money(s.carried)} carried</>}
-        </div>
+        {s.historyOnly ? (
+          <>
+            <div className="num text-2xl font-black">{money(s.spent)}</div>
+            <div className="text-xs font-extrabold opacity-75">spent{s.added > 0 && <> · {money(s.added)} back</>}</div>
+          </>
+        ) : (
+          <>
+            <div className={cx("num text-2xl font-black", over && "text-[#c45c5c]")}>{money(s.left)}</div>
+            <div className="text-xs font-extrabold opacity-75">
+              {annual ? (
+                <>{s.envelope.goal ? <>of {money(s.envelope.goal)} goal</> : "saved"} · {money(s.yearSpent)} spent this year</>
+              ) : (
+                <>
+                  {over ? "overspent" : "left"} of {money(of)}
+                  {s.carried !== 0 && <> · {money(s.carried)} carried</>}
+                </>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </button>
   );
@@ -253,6 +316,7 @@ function EnvelopeModal({ s, budgetId, month, onClose, onEdit, onChanged }: {
   s: EnvelopeSummary; budgetId: string; month: string; onClose: () => void; onEdit: () => void; onChanged: () => void;
 }) {
   const color = (s.envelope.color || "lilac") as Color;
+  const annual = isAnnual(s.envelope);
   const [planned, setPlanned] = useState(String(s.planned));
   const [amount, setAmount] = useState("");
   const [payee, setPayee] = useState("");
@@ -293,20 +357,38 @@ function EnvelopeModal({ s, budgetId, month, onClose, onEdit, onChanged }: {
 
   return (
     <Modal open title={`${s.envelope.emoji ? s.envelope.emoji + " " : ""}${s.envelope.name}`} onClose={onClose} color={color}>
-      <div className="grid grid-cols-3 gap-3 text-center">
-        <MiniStat label="Planned" value={money(s.planned)} />
-        <MiniStat label="Spent" value={money(s.spent)} />
-        <MiniStat label="Left" value={money(s.left)} />
-      </div>
-      {s.carried !== 0 && (
-        <p className="mt-2 text-center text-sm font-bold opacity-80">Includes {money(s.carried)} carried in from earlier months.</p>
+      {annual ? (
+        <div className="grid grid-cols-3 gap-3 text-center">
+          <MiniStat label="Saved" value={money(s.left)} />
+          <MiniStat label="Yearly goal" value={s.envelope.goal ? money(s.envelope.goal) : "None"} />
+          <MiniStat label="Spent this year" value={money(s.yearSpent)} />
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-3 text-center">
+          <MiniStat label="Planned" value={money(s.planned)} />
+          <MiniStat label="Spent" value={money(s.spent)} />
+          <MiniStat label={s.historyOnly ? "Money back" : "Left"} value={money(s.historyOnly ? s.added : s.left)} />
+        </div>
+      )}
+      {s.historyOnly ? (
+        <p className="mt-2 text-center text-sm font-bold opacity-80">
+          This month is from your imported history, before the balances you entered, so only spending is shown.
+        </p>
+      ) : (s.carried !== 0 || s.added !== 0) && (
+        <p className="mt-2 text-center text-sm font-bold opacity-80">
+          {s.carried !== 0 && <>Includes {money(s.carried)} carried in from earlier months. </>}
+          {s.added !== 0 && <>{money(s.added)} was put straight back in this month.</>}
+        </p>
       )}
 
       <div className="mt-5 flex items-end gap-3">
         <div className="flex-1">
-          <MoneyInput label={`Put in for ${monthLabel(month)}`} value={planned}
+          <MoneyInput label={`Put in for ${monthLabel(month)}`} value={planned} min={undefined}
             onChange={(e) => setPlanned(e.target.value)} onBlur={savePlanned}
-            onKeyDown={(e) => e.key === "Enter" && (e.currentTarget.blur())} />
+            onKeyDown={(e) => e.key === "Enter" && (e.currentTarget.blur())}
+            hint={annual && s.envelope.goal > 0 && !s.historyOnly
+              ? `${money(monthlyToGoal(s.envelope.goal, s.left - s.planned, month), { cents: true })} a month reaches the ${money(s.envelope.goal)} goal by December.`
+              : undefined} />
         </div>
       </div>
 
@@ -330,8 +412,10 @@ function EnvelopeModal({ s, budgetId, month, onClose, onEdit, onChanged }: {
             {s.transactions.map((t) => (
               <li key={t.id} className="flex items-center gap-3 rounded-2xl bg-white/70 px-4 py-2">
                 <span className="w-14 text-xs font-extrabold opacity-70">{shortDate(t.date)}</span>
-                <span className="flex-1 truncate font-bold">{t.payee || t.note || "Spent"}</span>
-                <span className="num font-black">{money(t.amount, { cents: true })}</span>
+                <span className="flex-1 truncate font-bold">{t.payee || t.note || (t.kind === "income" ? "Money back" : "Spent")}</span>
+                <span className={cx("num font-black", t.kind === "income" && "text-[#4c9a63]")}>
+                  {t.kind === "income" ? "+" : ""}{money(t.amount, { cents: true })}
+                </span>
                 <button className="opacity-50 hover:opacity-100" aria-label="Delete" onClick={async () => {
                   await deleteTransaction(t.id).catch((err) => setError(errorMessage(err)));
                   onChanged();
@@ -375,6 +459,9 @@ function EnvelopeForm({ open, envelope, budgetId, count, onClose, onSaved }: {
   const [amount, setAmount] = useState("");
   const [rollover, setRollover] = useState(false);
   const [archived, setArchived] = useState(false);
+  const [period, setPeriod] = useState<"monthly" | "annual">("monthly");
+  const [goal, setGoal] = useState("");
+  const [opening, setOpening] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -387,6 +474,9 @@ function EnvelopeForm({ open, envelope, budgetId, count, onClose, onSaved }: {
     setAmount(envelope ? String(envelope.default_amount ?? 0) : "");
     setRollover(envelope?.rollover ?? false);
     setArchived(envelope?.archived ?? false);
+    setPeriod(envelope?.period === "annual" ? "annual" : "monthly");
+    setGoal(envelope?.goal ? String(envelope.goal) : "");
+    setOpening(envelope?.opening_date ? String(envelope.opening_balance ?? 0) : "");
     setError(null);
   }, [open, envelope, count]);
 
@@ -394,7 +484,11 @@ function EnvelopeForm({ open, envelope, budgetId, count, onClose, onSaved }: {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const data = { name: name.trim(), emoji: emoji.trim(), color, group, default_amount: parseMoney(amount), rollover, archived };
+    const data = {
+      name: name.trim(), emoji: emoji.trim(), color, group, default_amount: parseMoney(amount),
+      rollover: rollover || period === "annual", archived, period, goal: period === "annual" ? parseMoney(goal) : 0,
+      ...(envelope?.opening_date ? { opening_balance: parseMoney(opening) } : {}),
+    };
     try {
       if (envelope) {
         await updateEnvelope(envelope.id, data);
@@ -429,14 +523,27 @@ function EnvelopeForm({ open, envelope, budgetId, count, onClose, onSaved }: {
           <TextInput label="Name" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Groceries" />
           <TextInput label="Emoji" value={emoji} onChange={(e) => setEmoji(e.target.value)} placeholder="🥕" maxLength={4} />
         </div>
+        <Select label="Kind of envelope" value={period} onChange={(e) => setPeriod(e.target.value as "monthly" | "annual")}
+          options={[{ value: "monthly", label: "Monthly: spent month by month" }, { value: "annual", label: "Annual: saves toward a yearly goal" }]} />
         <div className="grid grid-cols-2 gap-3">
           <Select label="Category" value={group} onChange={(e) => setGroup(e.target.value as EnvelopeGroup)}
             options={[{ value: "", label: "None" }, ...ENVELOPE_GROUPS.map((g) => ({ value: g, label: GROUP_LABELS[g] }))]} />
           <MoneyInput label="Usual monthly amount" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </div>
+        {period === "annual" && (
+          <MoneyInput label="Yearly goal" value={goal} onChange={(e) => setGoal(e.target.value)}
+            hint="What you plan to spend from it in a year, like Christmas or donations. Leftover cash always stays in it." />
+        )}
+        {envelope?.opening_date && (
+          <MoneyInput label={`Balance on ${shortDate(envelope.opening_date)}, ${envelope.opening_date.slice(0, 4)}`} min={undefined}
+            value={opening} onChange={(e) => setOpening(e.target.value)}
+            hint="Set when you imported your history. The envelope's balance counts from here." />
+        )}
         <ColorPicker value={color} onChange={setColor} />
-        <Toggle label="Roll leftover cash into next month" checked={rollover} onChange={setRollover}
-          hint="For sinking funds like car repairs, Christmas or vacations." />
+        {period === "monthly" && (
+          <Toggle label="Roll leftover cash into next month" checked={rollover} onChange={setRollover}
+            hint="For sinking funds like car repairs or vacations." />
+        )}
         {envelope && <Toggle label="Archived" checked={archived} onChange={setArchived} hint="Hidden from new months. History is kept." />}
         <ErrorNote message={error} />
         <FormActions saving={busy} onDelete={envelope ? remove : undefined}
@@ -567,13 +674,14 @@ function ActivityList({ data, summary }: { data: MonthData; summary: ReturnType<
             return (
               <li key={t.id} className="flex items-center gap-3 px-2 py-3">
                 <span className={cx("flex h-10 w-10 flex-none items-center justify-center rounded-full text-lg",
-                  `c-${income ? "butter" : env?.color || "lilac"}`)} style={{ background: "var(--c)" }} aria-hidden="true">
-                  {income ? "💰" : env?.emoji || "✉️"}
+                  `c-${income && !env ? "butter" : env?.color || "lilac"}`)} style={{ background: "var(--c)" }} aria-hidden="true">
+                  {income && !env ? "💰" : env?.emoji || "✉️"}
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-extrabold">{t.payee || (income ? "Income" : "Spent")}</span>
                   <span className="block text-xs font-bold opacity-70">
-                    {shortDate(fromPbDate(t.date))} · {income ? "Income" : env?.name ?? "No envelope"}
+                    {shortDate(fromPbDate(t.date))} · {env ? (income ? `Into ${env.name}` : env.name) : income ? "Income" : "No envelope"}
+                    {t.account && <> · {t.account}</>}
                     {t.paystub_status === "needs_paystub" && <span className="pill c-butter ml-2">needs paystub</span>}
                     {t.paystub_status === "matched" && <span className="ml-2 opacity-70">· paystub ✓</span>}
                   </span>

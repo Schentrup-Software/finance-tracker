@@ -110,8 +110,8 @@ export function ErrorNote({ message }: { message: string | null }) {
 
 // ---------- Modal ----------
 
-export function Modal({ open, title, onClose, children, color = "white" }: {
-  open: boolean; title: string; onClose: () => void; children: ReactNode; color?: Color | "white";
+export function Modal({ open, title, onClose, children, color = "white", wide = false }: {
+  open: boolean; title: string; onClose: () => void; children: ReactNode; color?: Color | "white"; wide?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -132,7 +132,7 @@ export function Modal({ open, title, onClose, children, color = "white" }: {
     <div className="fixed inset-0 z-50 flex items-end justify-center p-3 sm:items-center sm:p-6"
       role="dialog" aria-modal="true" aria-label={title}>
       <div className="absolute inset-0 bg-[rgba(106,93,123,.35)] backdrop-blur-[2px]" onClick={onClose} />
-      <div ref={ref} className={cx("chunk pop-in relative max-h-[92vh] w-full max-w-lg overflow-y-auto p-6", `c-${color}`)}>
+      <div ref={ref} className={cx("chunk pop-in relative max-h-[92vh] w-full overflow-y-auto p-6", wide ? "max-w-3xl" : "max-w-lg", `c-${color}`)}>
         <div className="mb-5 flex items-center justify-between gap-3">
           <h2 className="text-2xl font-black">{title}</h2>
           <RoundButton label="Close" icon="close" onClick={onClose} />

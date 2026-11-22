@@ -1,0 +1,19 @@
+Date,Envelope,Account,Name,Notes,"Check #",Amount,Status,Details
+11/22/2026,Christmas,,"Envelope Transfer",,,"1,000.00",,
+11/22/2026,Extra,,"Envelope Transfer",,,"-1,000.00",,
+11/20/2026,Vacation,Visa,"Delta Air Lines",,,-45.00,CLR,
+11/20/2026,Groceries,Visa,Publix,,,-120.45,CLR,
+11/17/2026,Joey,Checking,Venmo,,,23.94,CLR,
+11/13/2026,,Checking,Paycheck,,,"2,410.11",CLR,[Available]|2410.11
+11/13/2026,,Visa,"CARD AUTOPAY",,,"500.00",CLR,
+11/13/2026,,Checking,"CARD AUTOPAY",,,"-500.00",,
+11/02/2026,,Visa,Walmart,,,-60.00,CLR,Groceries|-40.00||Joey|-20.00
+11/01/2026,,[none],"November Fill",,,0.00,,
+10/15/2026,Groceries,Visa,Publix,"weekly shop",,-80.00,CLR,
+10/15/2026,Groceries,Visa,Publix,"weekly shop",,-80.00,CLR,
+10/02/2026,Donations,Checking,Check,,105,-100.00,,
+10/01/2026,[Available],,"Envelope Transfer",,,25.00,,
+10/01/2026,Extra,,"Envelope Transfer",,,-25.00,,
+09/01/2026,[Available],Visa,"Updated Visa",,,-12.00,,
+09/01/2026,,Checking,"Starting Fill",,,"1,500.00",,Groceries|500.00||Extra|1000.00
+09/01/2026,,[none],"Fill",,,0.00,,"DELETED: House|200.00||[Available]|-200.00"

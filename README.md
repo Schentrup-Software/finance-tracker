@@ -13,6 +13,9 @@ Budgets, debts and assets in one place. A small self-hosted web app with three t
   OpenClaw agent as backup). HSA and 401(k) contributions can feed the matching account on
   the Assets page, and a "so far this year" view totals federal tax, healthcare and every
   other deduction, per earner.
+  **Annual envelopes** (Christmas, donations) save toward a yearly goal and sit in their own
+  section under the monthly ones. **Import history** reads a CSV export such as Goodbudget's:
+  spending, refunds, split transactions, income and envelope transfers.
 - **Debts**: every loan and card with its balance, APR, monthly payment, payment history
   and its own payoff date. 401(k) loans paid from a paycheck go down automatically with
   each paystub, and the mortgage is listed separately.
