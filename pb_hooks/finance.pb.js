@@ -130,21 +130,36 @@ onRecordDelete((e) => {
 }, "paystubs");
 
 // A loan line on a paystub (a 401(k) loan repayment) pays down its debt.
+// A contribution line (HSA, 401(k)) with an asset raises that asset's value.
 onRecordCreate((e) => {
   e.next();
-  if (e.record.get("debt")) require(`${__hooks}/finance/lib.js`).syncLinePayment(e.app, e.record);
+  const lib = require(`${__hooks}/finance/lib.js`);
+  if (e.record.get("debt")) lib.syncLinePayment(e.app, e.record);
+  if (e.record.get("asset")) lib.adjustAssetValue(e.app, e.record.get("asset"), e.record.getFloat("amount"), lib.payDateOf(e.app, e.record));
 }, "paystub_lines");
 
 onRecordUpdate((e) => {
+  const before = e.record.original();
+  const oldAsset = before.get("asset");
+  const oldAmount = before.getFloat("amount");
   e.next();
-  require(`${__hooks}/finance/lib.js`).syncLinePayment(e.app, e.record);
+  const lib = require(`${__hooks}/finance/lib.js`);
+  lib.syncLinePayment(e.app, e.record);
+  if (oldAsset !== e.record.get("asset") || oldAmount !== e.record.getFloat("amount")) {
+    lib.adjustAssetValue(e.app, oldAsset, -oldAmount, "");
+    lib.adjustAssetValue(e.app, e.record.get("asset"), e.record.getFloat("amount"), lib.payDateOf(e.app, e.record));
+  }
 }, "paystub_lines");
 
 onRecordDelete((e) => {
   const owner = e.record.get("owner");
   const id = e.record.id;
+  const asset = e.record.get("asset");
+  const amount = e.record.getFloat("amount");
   e.next();
-  require(`${__hooks}/finance/lib.js`).removeLinePayment(e.app, owner, id);
+  const lib = require(`${__hooks}/finance/lib.js`);
+  lib.removeLinePayment(e.app, owner, id);
+  lib.adjustAssetValue(e.app, asset, -amount, "");
 }, "paystub_lines");
 
 // ---------- Paystub reader fallback (OpenClaw) ----------

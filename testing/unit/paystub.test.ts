@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { datesIn, fromAgent, readPaystub, readingLooksGood, segments, totalsByGroup, unexplained } from "~/lib/paystub";
+import { datesIn, fromAgent, isContributionCategory, readPaystub, readingLooksGood, segments, totalsByCategory, totalsByGroup, unexplained } from "~/lib/paystub";
 import { toRows } from "~/lib/pdfText";
 
 // Rows of cells as pdfText produces them, modelled on common payroll layouts.
@@ -104,5 +104,28 @@ describe("pdf text layout", () => {
       { x: 300, y: 680, w: 50, str: "2,313.10" },
     ]);
     expect(rows).toEqual([["Gross Pay", "3,500.00"], ["Net Pay", "2,313.10"]]);
+  });
+});
+
+describe("year-to-date totals", () => {
+  it("adds up each category across paystubs, largest first", () => {
+    const t = totalsByCategory([
+      { category: "federal_tax", amount: 312.45 },
+      { category: "medical", amount: 120.5 },
+      { category: "federal_tax", amount: 312.45 },
+      { category: "hsa", amount: 100 },
+    ]);
+    expect(t).toEqual([
+      { category: "federal_tax", total: 624.9 },
+      { category: "medical", total: 120.5 },
+      { category: "hsa", total: 100 },
+    ]);
+  });
+
+  it("treats HSA and retirement lines as contributions, not costs", () => {
+    expect(isContributionCategory("hsa")).toBe(true);
+    expect(isContributionCategory("401k")).toBe(true);
+    expect(isContributionCategory("medical")).toBe(false);
+    expect(isContributionCategory("401k_loan")).toBe(false);
   });
 });

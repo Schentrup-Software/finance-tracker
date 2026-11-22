@@ -232,19 +232,25 @@ export interface PaycheckData {
   lines: PaystubLine[];
   /** Deposits (any month) still waiting for a paystub. */
   waiting: Transaction[];
+  /** The whole calendar year the month is in, for year-to-date totals. */
+  year: { paystubs: Paystub[]; lines: PaystubLine[] };
 }
 
 export async function loadPaychecks(month: string): Promise<PaycheckData> {
   const { start, end } = monthRange(month);
-  const [earners, paystubs, lines, waiting] = await Promise.all([
+  const y = Number(month.slice(0, 4));
+  const ys = `${y}-01-01 00:00:00.000Z`, ye = `${y + 1}-01-01 00:00:00.000Z`;
+  const [earners, paystubs, lines, waiting, yearPaystubs, yearLines] = await Promise.all([
     listEarners(),
     list<Paystub>("paystubs", { filter: pb.filter("pay_date >= {:s} && pay_date < {:e}", { s: start, e: end }), sort: "-pay_date" }),
     list<PaystubLine>("paystub_lines", {
       filter: pb.filter("paystub.pay_date >= {:s} && paystub.pay_date < {:e}", { s: start, e: end }), sort: "sort,created",
     }),
     list<Transaction>("transactions", { filter: "paystub_status = 'needs_paystub'", sort: "-date" }),
+    list<Paystub>("paystubs", { filter: pb.filter("pay_date >= {:s} && pay_date < {:e}", { s: ys, e: ye }) }),
+    list<PaystubLine>("paystub_lines", { filter: pb.filter("paystub.pay_date >= {:s} && paystub.pay_date < {:e}", { s: ys, e: ye }) }),
   ]);
-  return { earners, paystubs, lines, waiting };
+  return { earners, paystubs, lines, waiting, year: { paystubs: yearPaystubs, lines: yearLines } };
 }
 
 export const listPaystubLines = (paystubId: string) =>
@@ -259,7 +265,9 @@ export async function latestPaystub(earnerId: string): Promise<{ paystub: Paystu
   return paystub ? { paystub, lines: await listPaystubLines(paystub.id) } : null;
 }
 
-export type LineDraft = { id?: string; category: PaystubLine["category"]; label: string; amount: number; debt: string };
+export type LineDraft = {
+  id?: string; category: PaystubLine["category"]; label: string; amount: number; debt: string; asset: string;
+};
 
 /**
  * Saves a paystub and replaces its lines. The server then ties it to a waiting
@@ -283,7 +291,7 @@ export async function savePaystub(
   const keep = new Set(lines.filter((l) => l.id).map((l) => l.id));
   await Promise.all(before.filter((l) => !keep.has(l.id)).map((l) => remove("paystub_lines", l.id)));
   await Promise.all(lines.map((l, i) => {
-    const d = { paystub: paystub.id, category: l.category, label: l.label, amount: l.amount, debt: l.debt, sort: i };
+    const d = { paystub: paystub.id, category: l.category, label: l.label, amount: l.amount, debt: l.debt, asset: l.asset, sort: i };
     return l.id ? update<PaystubLine>("paystub_lines", l.id, d) : create<PaystubLine>("paystub_lines", d);
   }));
   return paystub;

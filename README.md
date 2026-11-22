@@ -10,7 +10,9 @@ Budgets, debts and assets in one place. A small self-hosted web app with three t
   what comes out before the money reaches the bank (taxes, healthcare, retirement, 401(k)
   loans). A deposit within one cent of the last paycheck reuses its deductions; anything
   else asks for the new paystub, which the app reads from the PDF (with an optional
-  OpenClaw agent as backup).
+  OpenClaw agent as backup). HSA and 401(k) contributions can feed the matching account on
+  the Assets page, and a "so far this year" view totals federal tax, healthcare and every
+  other deduction, per earner.
 - **Debts**: every loan and card with its balance, APR, monthly payment, payment history
   and its own payoff date. 401(k) loans paid from a paycheck go down automatically with
   each paystub, and the mortgage is listed separately.

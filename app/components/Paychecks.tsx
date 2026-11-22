@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   agentReaderAvailable, createEarner, deleteEarner, deletePaystub, errorMessage, fromPbDate, latestPaystub,
-  listDebts, listPaystubLines, loadPaychecks, paystubFileUrl, readPaystubWithAgent, savePaystub, subscribeAll,
+  listAssets, listDebts, listPaystubLines, loadPaychecks, paystubFileUrl, readPaystubWithAgent, savePaystub, subscribeAll,
   toPbDate, updateEarner, type LineDraft, type PaycheckData,
 } from "~/backend/api";
 import {
-  PAY_FREQUENCIES, type Color, type Debt, type Earner, type PayFrequency, type Paystub,
-  type PaystubCategory, type Transaction,
+  PAY_FREQUENCIES, type Asset, type Color, type Debt, type Earner, type PayFrequency, type Paystub,
+  type PaystubCategory, type PaystubLine, type Transaction,
 } from "~/backend/types";
 import {
   Button, Card, ColorPicker, ErrorNote, FormActions, Icon, Modal, MoneyInput, SectionTitle, Select, TextInput,
@@ -15,7 +15,8 @@ import {
 import { monthLabel, shortDate, todayISO } from "~/lib/dates";
 import { money, parseMoney, round2 } from "~/lib/money";
 import {
-  CATEGORY_GROUPS, CATEGORY_LABELS, fromAgent, isLoanCategory, readPaystub, readingLooksGood, totalsByGroup,
+  CATEGORY_GROUPS, CATEGORY_LABELS, CONTRIBUTION_ASSET_TYPES, fromAgent, isContributionCategory, isLoanCategory,
+  readPaystub, readingLooksGood, totalsByCategory, totalsByGroup,
   unexplained, type PaystubReading,
 } from "~/lib/paystub";
 
@@ -32,15 +33,17 @@ const SOURCE_LABELS: Record<string, string> = { upload: "From paystub", manual: 
 export function Paychecks({ month }: { month: string }) {
   const [data, setData] = useState<PaycheckData | null>(null);
   const [debts, setDebts] = useState<Debt[]>([]);
+  const [assets, setAssets] = useState<Asset[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editingEarner, setEditingEarner] = useState<Earner | "new" | null>(null);
   const [stub, setStub] = useState<{ paystub?: Paystub; earner?: string; tx?: Transaction } | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      const [d, debtList] = await Promise.all([loadPaychecks(month), listDebts()]);
+      const [d, debtList, assetList] = await Promise.all([loadPaychecks(month), listDebts(), listAssets()]);
       setData(d);
       setDebts(debtList);
+      setAssets(assetList);
       setError(null);
     } catch (err) {
       setError(errorMessage(err));
@@ -48,7 +51,7 @@ export function Paychecks({ month }: { month: string }) {
   }, [month]);
 
   useEffect(() => { reload(); }, [reload]);
-  useEffect(() => subscribeAll(["earners", "paystubs", "paystub_lines", "transactions"], reload), [reload]);
+  useEffect(() => subscribeAll(["earners", "paystubs", "paystub_lines", "transactions", "assets"], reload), [reload]);
 
   const earnerById = useMemo(() => new Map((data?.earners ?? []).map((e) => [e.id, e])), [data]);
 
@@ -94,7 +97,7 @@ export function Paychecks({ month }: { month: string }) {
         onClose={() => setEditingEarner(null)} onSaved={reload} />
 
       {stub && (
-        <PaystubModal earners={activeEarners} debts={debts} initial={stub}
+        <PaystubModal earners={activeEarners} debts={debts} assets={assets} initial={stub}
           onClose={() => setStub(null)} onSaved={reload} />
       )}
     </section>
@@ -127,9 +130,9 @@ function BeforeTheBank({ data, earnerById, month, onOpen, onEditEarner }: {
   data: PaycheckData; earnerById: Map<string, Earner>; month: string;
   onOpen: (p: Paystub) => void; onEditEarner: (e: Earner) => void;
 }) {
-  const gross = round2(data.paystubs.reduce((s, p) => s + p.gross, 0));
-  const net = round2(data.paystubs.reduce((s, p) => s + p.net, 0));
-  const groups = totalsByGroup(data.lines).filter((g) => g.total > 0);
+  const [range, setRange] = useState<"month" | "year">("month");
+  const year = month.slice(0, 4);
+  const shown = range === "month" ? { paystubs: data.paystubs, lines: data.lines } : data.year;
   const linesByStub = useMemo(() => {
     const m = new Map<string, number>();
     for (const l of data.lines) m.set(l.paystub, round2((m.get(l.paystub) ?? 0) + l.amount));
@@ -139,43 +142,17 @@ function BeforeTheBank({ data, earnerById, month, onOpen, onEditEarner }: {
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1.2fr_1fr]">
       <Card className="pop-in p-6">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <div className="text-sm font-extrabold uppercase tracking-wide opacity-75">Before it hits the bank</div>
-            <div className="num text-3xl font-black">{money(gross)} <span className="text-lg opacity-60">gross</span></div>
-          </div>
-          <div className="text-right">
-            <div className="text-sm font-extrabold uppercase tracking-wide opacity-75">Take-home</div>
-            <div className="num text-3xl font-black text-[#4c9a63]">{money(net)}</div>
-          </div>
+        <div className="mb-4 inline-flex rounded-full bg-[rgba(106,93,123,.08)] p-1 text-sm font-black" role="tablist" aria-label="Period">
+          {(["month", "year"] as const).map((r) => (
+            <button key={r} type="button" role="tab" aria-selected={range === r} onClick={() => setRange(r)}
+              className={cx("rounded-full px-4 py-1.5", range === r ? "bg-white shadow" : "opacity-60")}>
+              {r === "month" ? monthLabel(month) : `${year} so far`}
+            </button>
+          ))}
         </div>
-
-        {gross > 0 ? (
-          <>
-            <div className="mt-4 flex h-6 w-full overflow-hidden rounded-full bg-[rgba(106,93,123,.08)]" role="img"
-              aria-label={[...groups.map((g) => `${g.group.label} ${money(g.total)}`), `Take-home ${money(net)}`].join(", ")}>
-              {groups.map((g) => (
-                <span key={g.group.key} className={`c-${g.group.color} h-full`} title={`${g.group.label}: ${money(g.total)}`}
-                  style={{ width: `${(g.total / gross) * 100}%`, background: "var(--cd)" }} />
-              ))}
-              <span className="c-mint h-full" style={{ width: `${(net / gross) * 100}%`, background: "var(--c)" }} title="Take-home" />
-            </div>
-            <ul className="mt-4 space-y-2">
-              {groups.map((g) => (
-                <li key={g.group.key} className={`c-${g.group.color} flex items-center gap-3 font-bold`}>
-                  <span className="flex h-9 w-9 items-center justify-center rounded-full" style={{ background: "var(--c)" }} aria-hidden="true">
-                    {g.group.emoji}
-                  </span>
-                  <span className="flex-1">{g.group.label}</span>
-                  <span className="num font-black">−{money(g.total, { cents: true })}</span>
-                  <span className="num w-12 text-right text-xs opacity-60">{Math.round((g.total / gross) * 100)}%</span>
-                </li>
-              ))}
-            </ul>
-          </>
-        ) : (
-          <p className="mt-3 font-semibold opacity-75">No paystubs for {monthLabel(month)} yet.</p>
-        )}
+        <Breakdown paystubs={shown.paystubs} lines={shown.lines} earnerById={earnerById}
+          empty={range === "month" ? `No paystubs for ${monthLabel(month)} yet.` : `No paystubs in ${year} yet.`}
+          detailed={range === "year"} />
       </Card>
 
       <div className="tray p-4">
@@ -215,6 +192,75 @@ function BeforeTheBank({ data, earnerById, month, onOpen, onEditEarner }: {
         )}
       </div>
     </div>
+  );
+}
+
+/** Gross → what came out → take-home, for a set of paystubs. */
+function Breakdown({ paystubs, lines, earnerById, empty, detailed }: {
+  paystubs: Paystub[]; lines: PaystubLine[]; earnerById: Map<string, Earner>; empty: string; detailed: boolean;
+}) {
+  const gross = round2(paystubs.reduce((s, p) => s + p.gross, 0));
+  const net = round2(paystubs.reduce((s, p) => s + p.net, 0));
+  const groups = totalsByGroup(lines).filter((g) => g.total > 0);
+
+  // Per earner, for households with more than one paycheck.
+  const earnerOfStub = new Map(paystubs.map((p) => [p.id, p.earner]));
+  const earnerIds = [...new Set(paystubs.map((p) => p.earner))];
+  const perEarner = (category: PaystubCategory) => earnerIds.map((id) =>
+    round2(lines.filter((l) => l.category === category && earnerOfStub.get(l.paystub) === id).reduce((s, l) => s + l.amount, 0)));
+
+  if (gross <= 0) return <p className="font-semibold opacity-75">{empty}</p>;
+  return (
+    <>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="text-sm font-extrabold uppercase tracking-wide opacity-75">Before it hits the bank</div>
+          <div className="num text-3xl font-black">{money(gross)} <span className="text-lg opacity-60">gross</span></div>
+        </div>
+        <div className="text-right">
+          <div className="text-sm font-extrabold uppercase tracking-wide opacity-75">Take-home</div>
+          <div className="num text-3xl font-black text-[#4c9a63]">{money(net)}</div>
+        </div>
+      </div>
+      <div className="mt-4 flex h-6 w-full overflow-hidden rounded-full bg-[rgba(106,93,123,.08)]" role="img"
+        aria-label={[...groups.map((g) => `${g.group.label} ${money(g.total)}`), `Take-home ${money(net)}`].join(", ")}>
+        {groups.map((g) => (
+          <span key={g.group.key} className={`c-${g.group.color} h-full`} title={`${g.group.label}: ${money(g.total)}`}
+            style={{ width: `${(g.total / gross) * 100}%`, background: "var(--cd)" }} />
+        ))}
+        <span className="c-mint h-full" style={{ width: `${(net / gross) * 100}%`, background: "var(--c)" }} title="Take-home" />
+      </div>
+      <ul className="mt-4 space-y-3">
+        {groups.map((g) => (
+          <li key={g.group.key} className={`c-${g.group.color}`}>
+            <div className="flex items-center gap-3 font-bold">
+              <span className="flex h-9 w-9 items-center justify-center rounded-full" style={{ background: "var(--c)" }} aria-hidden="true">
+                {g.group.emoji}
+              </span>
+              <span className="flex-1">{g.group.label}</span>
+              <span className="num font-black">−{money(g.total, { cents: true })}</span>
+              <span className="num w-12 text-right text-xs opacity-60">{Math.round((g.total / gross) * 100)}%</span>
+            </div>
+            {detailed && (
+              <ul className="ml-12 mt-1 space-y-0.5 text-sm font-semibold">
+                {totalsByCategory(lines.filter((l) => g.group.categories.includes(l.category))).map((c) => (
+                  <li key={c.category} className="flex gap-3">
+                    <span className="flex-1 opacity-80">{CATEGORY_LABELS[c.category]}</span>
+                    {earnerIds.length > 1 && perEarner(c.category).map((v, i) => (
+                      <span key={earnerIds[i]} className="num w-24 text-right text-xs opacity-60"
+                        title={earnerById.get(earnerIds[i])?.name}>
+                        {earnerById.get(earnerIds[i])?.name}: {money(v)}
+                      </span>
+                    ))}
+                    <span className="num w-24 text-right font-black">{money(c.total, { cents: true })}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -289,8 +335,8 @@ function EarnerForm({ open, earner, onClose, onSaved }: { open: boolean; earner:
 
 type Step = "pick" | "reading" | "review";
 
-function PaystubModal({ earners, debts, initial, onClose, onSaved }: {
-  earners: Earner[]; debts: Debt[];
+function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
+  earners: Earner[]; debts: Debt[]; assets: Asset[];
   initial: { paystub?: Paystub; earner?: string; tx?: Transaction };
   onClose: () => void; onSaved: () => void;
 }) {
@@ -311,24 +357,36 @@ function PaystubModal({ earners, debts, initial, onClose, onSaved }: {
 
   useEffect(() => { agentReaderAvailable().then(setAgent); }, []);
   useEffect(() => {
-    if (existing) listPaystubLines(existing.id).then((ls) => setLines(ls.map((l) => ({ id: l.id, category: l.category, label: l.label, amount: l.amount, debt: l.debt }))));
+    if (existing) listPaystubLines(existing.id).then((ls) => setLines(ls.map((l) => ({ id: l.id, category: l.category, label: l.label, amount: l.amount, debt: l.debt, asset: l.asset }))));
   }, [existing]);
 
   const loanDebts = debts.filter((d) => d.type === "401k_loan" || d.balance > 0);
 
-  /** Links loan lines to a debt: same debt as last time, else the only 401(k) loan. */
+  /**
+   * Links loan lines to their debt and contribution lines to their account: the
+   * same one as on the last paystub, else the only one of the right kind.
+   */
   function withDebts(ls: LineDraft[], previous: LineDraft[]): LineDraft[] {
     const k401 = debts.filter((d) => d.type === "401k_loan" && d.balance > 0);
+    const samePrev = (l: LineDraft, key: "debt" | "asset") =>
+      previous.find((p) => p[key] && p.category === l.category && p.label === l.label) ??
+      previous.find((p) => p[key] && p.category === l.category);
     return ls.map((l) => {
-      if (!isLoanCategory(l.category) || l.debt) return l;
-      const prev = previous.find((p) => p.debt && p.category === l.category && (p.label === l.label || previous.length === 1));
-      return { ...l, debt: prev?.debt ?? (l.category === "401k_loan" && k401.length === 1 ? k401[0].id : "") };
+      if (isLoanCategory(l.category) && !l.debt) {
+        return { ...l, debt: samePrev(l, "debt")?.debt ?? (l.category === "401k_loan" && k401.length === 1 ? k401[0].id : "") };
+      }
+      if (isContributionCategory(l.category) && !l.asset) {
+        const types = CONTRIBUTION_ASSET_TYPES[l.category] ?? [];
+        const fits = assets.filter((a) => types.includes(a.type));
+        return { ...l, asset: samePrev(l, "asset")?.asset ?? (fits.length === 1 ? fits[0].id : "") };
+      }
+      return l;
     });
   }
 
   async function previousLines(): Promise<LineDraft[]> {
     const last = earner ? await latestPaystub(earner) : null;
-    return (last?.lines ?? []).map((l) => ({ category: l.category, label: l.label, amount: l.amount, debt: l.debt }));
+    return (last?.lines ?? []).map((l) => ({ category: l.category, label: l.label, amount: l.amount, debt: l.debt, asset: l.asset }));
   }
 
   function apply(r: PaystubReading, previous: LineDraft[]) {
@@ -337,7 +395,7 @@ function PaystubModal({ earners, debts, initial, onClose, onSaved }: {
     if (r.period_end) setPeriodEnd(r.period_end);
     if (r.gross !== null) setGross(String(r.gross));
     if (r.net !== null) setNet(String(r.net));
-    setLines(withDebts(r.lines.map((l) => ({ ...l, debt: "" })), previous));
+    setLines(withDebts(r.lines.map((l) => ({ ...l, debt: "", asset: "" })), previous));
   }
 
   async function readWithAgent(f: File): Promise<PaystubReading> {
@@ -502,6 +560,13 @@ function PaystubModal({ earners, debts, initial, onClose, onSaved }: {
                   <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <input aria-label="Label on paystub" className="input !py-2 text-sm" placeholder="As printed on the paystub"
                       value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} />
+                    {isContributionCategory(l.category) && (
+                      <select aria-label="Goes into" className="input !py-2 text-sm" value={l.asset}
+                        onChange={(e) => setLine(i, { asset: e.target.value })}>
+                        <option value="">Goes into… (pick the account)</option>
+                        {assets.map((a) => <option key={a.id} value={a.id}>{a.name} ({money(a.value)})</option>)}
+                      </select>
+                    )}
                     {isLoanCategory(l.category) && (
                       <select aria-label="Pays down" className="input !py-2 text-sm" value={l.debt}
                         onChange={(e) => setLine(i, { debt: e.target.value })}>
@@ -514,7 +579,7 @@ function PaystubModal({ earners, debts, initial, onClose, onSaved }: {
               ))}
             </ul>
             <button type="button" className="btn-ghost mt-2 text-sm"
-              onClick={() => setLines((ls) => [...ls, { category: "federal_tax", label: "", amount: 0, debt: "" }])}>
+              onClick={() => setLines((ls) => [...ls, { category: "federal_tax", label: "", amount: 0, debt: "", asset: "" }])}>
               <Icon name="plus" className="h-4 w-4" /> Add a line
             </button>
           </div>

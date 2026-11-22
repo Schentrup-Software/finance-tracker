@@ -146,5 +146,7 @@ export interface PaystubLine extends BaseRecord {
   label: string;
   amount: number;
   debt: string;
+  /** For contributions (HSA, 401(k)): the account it goes into. */
+  asset: string;
   sort: number;
 }

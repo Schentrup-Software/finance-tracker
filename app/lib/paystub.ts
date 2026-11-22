@@ -39,7 +39,8 @@ export const CATEGORY_GROUPS: CategoryGroup[] = [
   { key: "taxes", label: "Taxes", emoji: "🏛️", color: "coral",
     categories: ["federal_tax", "state_tax", "local_tax", "social_security", "medicare"] },
   { key: "health", label: "Healthcare", emoji: "🩺", color: "pink",
-    categories: ["medical", "dental", "vision", "hsa", "fsa", "life", "disability"] },
+    categories: ["medical", "dental", "vision", "life", "disability"] },
+  { key: "health_savings", label: "HSA and FSA", emoji: "🩹", color: "aqua", categories: ["hsa", "fsa"] },
   { key: "retirement", label: "Retirement savings", emoji: "🌳", color: "mint",
     categories: ["401k", "roth_401k", "retirement_other"] },
   { key: "loans", label: "Loan repayments", emoji: "⛓️", color: "peach", categories: ["401k_loan", "loan_other"] },
@@ -52,6 +53,26 @@ export function groupOf(category: PaystubCategory): CategoryGroup {
 
 export function isLoanCategory(c: PaystubCategory) {
   return c === "401k_loan" || c === "loan_other";
+}
+
+/** Lines that put money into an account you own (and so can feed an asset). */
+export function isContributionCategory(c: PaystubCategory) {
+  return c === "hsa" || c === "401k" || c === "roth_401k" || c === "retirement_other";
+}
+
+/** The asset types a contribution line most likely goes into. */
+export const CONTRIBUTION_ASSET_TYPES: Partial<Record<PaystubCategory, string[]>> = {
+  hsa: ["hsa"],
+  "401k": ["401k"],
+  roth_401k: ["401k", "roth_ira"],
+  retirement_other: ["401k", "ira", "roth_ira"],
+};
+
+/** Totals per category, largest first. */
+export function totalsByCategory(lines: { category: PaystubCategory; amount: number }[]) {
+  const m = new Map<PaystubCategory, number>();
+  for (const l of lines) m.set(l.category, round2((m.get(l.category) ?? 0) + l.amount));
+  return [...m.entries()].map(([category, total]) => ({ category, total })).sort((a, b) => b.total - a.total);
 }
 
 // ---------- Reading paystub text ----------

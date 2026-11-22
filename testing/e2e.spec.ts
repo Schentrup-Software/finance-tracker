@@ -179,6 +179,11 @@ test("paychecks: read a PDF paystub, then match the next paycheck to the cent", 
   await expect(page.getByText("−$1,447.86")).toBeVisible(); // two paychecks of taxes
   await shot(page, "06-paychecks");
 
+  // The year view lists each line on its own, e.g. federal income tax so far.
+  await page.getByRole("tab", { name: /so far/ }).click();
+  await expect(page.getByText("Federal income tax")).toBeVisible();
+  await shot(page, "07-year-so-far");
+
   // Both paychecks' 401(k) loan lines paid down the loan.
   await page.getByRole("link", { name: /Debts/ }).click();
   await expect(page.getByText("$5,757.72")).toBeVisible();

@@ -80,5 +80,25 @@ check "deleting a deposit undoes its copied paystub's loan payment" "$(balance_o
 check "another user can't add lines to my paystub" "$(j -H "$OTHER" -X POST "$B/api/collections/paystub_lines/records" -d "{\"paystub\":\"$STUB\",\"category\":\"medical\",\"amount\":1}" | field '["status"]')" "400"
 check "another user can't file a paystub under my earner" "$(j -H "$OTHER" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\":\"$EARNER\",\"pay_date\":\"2026-11-07\"}" | field '["status"]')" "400"
 
+# HSA / 401(k) contribution lines feed the linked asset
+value_of() { j -H "$A" "$B/api/collections/assets/records/$1" | field '["value"]'; }
+HSA=$(j -H "$A" -X POST "$B/api/collections/assets/records" -d '{"name":"HSA","type":"hsa","value":1000}' | field '["id"]')
+E2=$(j -H "$A" -X POST "$B/api/collections/earners/records" -d '{"name":"Sam"}' | field '["id"]')
+S2=$(j -H "$A" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\":\"$E2\",\"pay_date\":\"2026-11-07 12:00:00.000Z\",\"gross\":3000,\"net\":2000,\"source\":\"upload\"}" | field '["id"]')
+L2=$(j -H "$A" -X POST "$B/api/collections/paystub_lines/records" -d "{\"paystub\":\"$S2\",\"category\":\"hsa\",\"amount\":100,\"asset\":\"$HSA\"}" | field '["id"]')
+check "an HSA line raises the HSA" "$(value_of "$HSA")" "1100"
+j -H "$A" -X PATCH "$B/api/collections/paystub_lines/records/$L2" -d '{"amount":125}' > /dev/null
+check "editing the HSA line adjusts it" "$(value_of "$HSA")" "1125"
+D4=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E2\",\"amount\":2000,\"date\":\"2026-11-21 12:00:00.000Z\"}" | field '["id"]')
+check "a repeat paycheck feeds the HSA again" "$(value_of "$HSA")" "1250"
+j -H "$A" -X DELETE "$B/api/collections/transactions/records/$D4" > /dev/null
+check "deleting that deposit takes it back out" "$(value_of "$HSA")" "1125"
+j -H "$A" -X DELETE "$B/api/collections/paystub_lines/records/$L2" > /dev/null
+check "deleting the HSA line takes it back out" "$(value_of "$HSA")" "1000"
+OE=$(j -H "$OTHER" -X POST "$B/api/collections/earners/records" -d '{"name":"B"}' | field '["id"]')
+OS=$(j -H "$OTHER" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\":\"$OE\",\"pay_date\":\"2026-11-07\"}" | field '["id"]')
+check "another user can't feed my HSA" "$(j -H "$OTHER" -X POST "$B/api/collections/paystub_lines/records" -d "{\"paystub\":\"$OS\",\"category\":\"hsa\",\"amount\":1,\"asset\":\"$HSA\"}" | field '["status"]')" "400"
+check "my HSA is untouched" "$(value_of "$HSA")" "1000"
+
 echo
 [ "$FAILS" -eq 0 ] && echo "All API checks passed." || { echo "$FAILS check(s) failed."; exit 1; }

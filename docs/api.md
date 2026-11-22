@@ -146,6 +146,12 @@ Loan lines (`401k_loan`, `loan_other`) with a `debt` set create a matching `debt
 row (external id `paystub-line:<line id>`), so the loan's balance goes down every paycheck.
 Editing or deleting the line or paystub updates or removes that payment.
 
+Contribution lines (`hsa`, `401k`, `roth_401k`, `retirement_other`) with an `asset` set add
+their amount to that asset's `value` (and move `as_of` to the pay date), so an HSA or 401(k)
+grows with every paycheck. Editing or deleting the line, its paystub or a deposit's copied
+paystub takes the amount back out. If n8n also syncs that account's balance from the bank,
+leave `asset` empty on those lines so the money isn't counted twice.
+
 To have n8n remind you, poll for deposits waiting on a paystub:
 
 ```http
@@ -332,6 +338,7 @@ Envelope cash left = allocation (+ carried, for rollover envelopes) − the mont
 | `label` | text | As printed on the stub |
 | `amount` | number ≥ 0 | |
 | `debt` | relation → debts | For loan lines: the debt it pays down |
+| `asset` | relation → assets | For HSA and retirement lines: the account it goes into |
 | `sort` | number | |
 
 ## 5. Errors

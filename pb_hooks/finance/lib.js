@@ -240,6 +240,7 @@ function repeatPaystub(app, template, tx) {
     l.set("label", line.get("label"));
     l.set("amount", line.getFloat("amount"));
     l.set("debt", line.get("debt"));
+    l.set("asset", line.get("asset"));
     l.set("sort", line.getFloat("sort"));
     app.save(l);
   }
@@ -307,6 +308,30 @@ function detachPaystub(app, txId) {
   try { tx = app.findRecordById("transactions", txId); } catch (_) { return; }
   if (paystubsForTransaction(app, txId).length === 0 && tx.get("earner") && tx.get("kind") === "income") {
     setPaystubStatus(app, tx, "needs_paystub");
+  }
+}
+
+// ---------- Contributions taken out of a paycheck into an asset ----------
+
+/** Adds `delta` to an asset's value (an HSA or 401(k) contribution), never below zero. */
+function adjustAssetValue(app, assetId, delta, date) {
+  if (!assetId || !delta) return;
+  let asset;
+  try {
+    asset = app.findRecordById("assets", assetId);
+  } catch (_) {
+    return; // the asset was deleted
+  }
+  asset.set("value", Math.max(0, Math.round((asset.getFloat("value") + delta) * 100) / 100));
+  if (delta > 0 && date && date > asset.getString("as_of")) asset.set("as_of", date);
+  app.save(asset);
+}
+
+function payDateOf(app, line) {
+  try {
+    return app.findRecordById("paystubs", line.get("paystub")).getString("pay_date");
+  } catch (_) {
+    return "";
   }
 }
 
@@ -430,7 +455,7 @@ function readPaystubWithAgent(base64, filename, mediaType) {
 }
 
 module.exports = {
-  agentConfig, readPaystubWithAgent,
+  agentConfig, readPaystubWithAgent, adjustAssetValue, payDateOf,
   OWNED, SYNCABLE, upsert, adjustDebtBalance,
   setPaystubStatus, reconcilePaycheck, attachPaystub, detachPaystub, syncLinePayment, removeLinePayment,
 };
