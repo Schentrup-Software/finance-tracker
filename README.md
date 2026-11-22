@@ -28,27 +28,16 @@ The Docker image holds everything: PocketBase serves the API, the admin dashboar
 built app on port 8080. Every push to `main` publishes
 `ghcr.io/schentrup-software/finance-tracker:latest`.
 
-```yaml
-services:
-  finance-tracker:
-    image: ghcr.io/schentrup-software/finance-tracker:latest
-    pull_policy: always
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./pb_data:/pb/pb_data   # your data; back this folder up
-    restart: unless-stopped
-```
+- **TrueNAS:** follow **[docs/truenas.md](docs/truenas.md)** and paste
+  [deploy/truenas.yaml](deploy/truenas.yaml) into **Apps → Discover Apps → Custom App →
+  Install via YAML**.
+- **Any Docker host:** `docker compose up --build -d`, then open `http://localhost:30680`.
+  Data is kept in `./pb_data`; back that folder up.
 
-First run:
-
-1. Open `http://<host>:8080`. The first visit offers **Create account**; that becomes your
-   login. After that, sign-up is closed.
-2. Create a superuser for the admin dashboard at `http://<host>:8080/_/` (PocketBase prints
-   a one-time setup link in the container log). You need it to add more users or to mint
-   a long-lived API token for n8n.
-
-The schema is in `pb_migrations/` and is applied automatically on start.
+On first visit the app offers **Create account**; that becomes your login, and sign-up
+then closes. For the PocketBase admin dashboard (`/_/`), create a superuser with
+`/pb/pocketbase superuser upsert <email> <password> --dir=/pb/pb_data` inside the
+container. The schema in `pb_migrations/` is applied automatically on start.
 
 ## Develop
 
@@ -81,4 +70,5 @@ app/
 pb_migrations/   collections, fields and API rules
 pb_hooks/        sign-up lock, owner fill-in, debt balance updates, /api/sync endpoint
 docs/api.md      API reference for n8n
+docs/truenas.md  TrueNAS install guide (deploy/truenas.yaml)
 ```

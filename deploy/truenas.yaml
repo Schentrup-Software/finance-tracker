@@ -1,0 +1,23 @@
+# TrueNAS SCALE 24.10+ (Docker apps):
+#   Apps > Discover Apps > ⋮ next to Custom App > Install via YAML
+# Name the app "finance-tracker", paste this file, and save.
+# Full instructions: docs/truenas.md
+#
+# Before installing, create the dataset below and give the "apps" user
+# (ID 568) read/write access to it. Change the path to match your pool.
+
+services:
+  finance-tracker:
+    image: ghcr.io/schentrup-software/finance-tracker:latest
+    pull_policy: always
+    user: "568:568"
+    ports:
+      - "30680:8080" # host:container - change the left side if 30680 is taken
+    volumes:
+      - /mnt/tank/apps/finance-tracker/pb_data:/pb/pb_data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped

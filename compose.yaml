@@ -1,9 +1,15 @@
+# Build and run on any Docker host:
+#
+#   docker compose up --build -d      ->  http://localhost:30680
+#
+# For TrueNAS, use deploy/truenas.yaml instead (see docs/truenas.md).
+
 services:
   finance-tracker:
+    build: .
     image: ghcr.io/schentrup-software/finance-tracker:latest
-    pull_policy: always
     ports:
-      - "8080:8080"
+      - "30680:8080" # host:container - change the left side if 30680 is taken
     volumes:
-      - ./pb_data:/pb/pb_data
+      - ./pb_data:/pb/pb_data # your data; back this folder up
     restart: unless-stopped
