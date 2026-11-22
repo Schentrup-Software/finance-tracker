@@ -372,7 +372,8 @@ function syncLinePayment(app, line) {
 // is configured with these environment variables:
 //
 //   OPENCLAW_URL    e.g. http://192.168.1.20:18789   (required)
-//   OPENCLAW_TOKEN  the gateway token or password     (required)
+//   OPENCLAW_TOKEN  the gateway token or password     (optional: leave it unset when
+//                   OpenClaw sits behind a trusted proxy that handles auth)
 //   OPENCLAW_AGENT  agent id to use (optional; default agent otherwise)
 
 const PAYSTUB_PROMPT = [
@@ -389,7 +390,7 @@ const PAYSTUB_PROMPT = [
 function agentConfig() {
   const url = ($os.getenv("OPENCLAW_URL") || "").replace(/\/+$/, "");
   const token = $os.getenv("OPENCLAW_TOKEN") || "";
-  return url && token ? { url: url, token: token, agent: $os.getenv("OPENCLAW_AGENT") || "" } : null;
+  return url ? { url: url, token: token, agent: $os.getenv("OPENCLAW_AGENT") || "" } : null;
 }
 
 /** Pulls the first JSON object out of a model reply. */
@@ -415,7 +416,8 @@ function responseText(body) {
 function readPaystubWithAgent(base64, filename, mediaType) {
   const cfg = agentConfig();
   if (!cfg) throw new BadRequestError("No OpenClaw agent is set up for reading paystubs.");
-  const headers = { "Content-Type": "application/json", Authorization: "Bearer " + cfg.token };
+  const headers = { "Content-Type": "application/json" };
+  if (cfg.token) headers.Authorization = "Bearer " + cfg.token;
   if (cfg.agent) headers["x-openclaw-agent-id"] = cfg.agent;
 
   const res = $http.send({

@@ -21,7 +21,7 @@ services:
       # Optional: an OpenClaw agent reads paystubs the built-in reader can't.
       # See docs/truenas.md. Remove the # on these two lines to turn it on.
       # OPENCLAW_URL: "http://192.168.1.20:18789"
-      # OPENCLAW_TOKEN: "your-gateway-token"
+      # OPENCLAW_TOKEN: "your-gateway-token"   # not needed behind a trusted proxy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
       interval: 30s
