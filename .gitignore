@@ -1,0 +1,16 @@
+.DS_Store
+/node_modules/
+
+# Local PocketBase (scripts/start-pocketbase.sh)
+/.local-pocketbase/
+/pb_data/
+/.env.development.local
+/.env
+/.env.local
+
+# React Router
+/.react-router/
+/build/
+
+/test-results/
+/playwright-report/
