@@ -130,7 +130,7 @@ with `confirmed = false`, and the report shows a "check these figures" banner un
   payee picker, deductible amount, "paid or reimbursed by" and "attach receipt". It stays collapsed and
   pre-filled, so a normal entry is no slower than today.
 - **Activity list:** a small badge on tagged rows, and a warning dot on $250+ gifts with no acknowledgment.
-- **New "Taxes" view on the Budget tab** (next to Paychecks), with the year picker and four parts:
+- **New "Taxes" view on the Budget tab** (next to Paychecks), with a year picker and five parts:
   1. *To do:* gifts missing acknowledgments, providers missing a TIN, items over $500 missing Form 8283 details,
      items over $5,000 missing an appraisal, unconfirmed figures, AGI not entered.
   2. *Donations:* list by charity, cash and items separately, mileage, the 0.5% floor and the deductible total.
