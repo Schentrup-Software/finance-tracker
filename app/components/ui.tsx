@@ -115,9 +115,14 @@ export function Modal({ open, title, onClose, children, color = "white", wide = 
   open: boolean; title: string; onClose: () => void; children: ReactNode; color?: Color | "white"; wide?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // Callers often pass a new onClose on every render. Keep the latest in a ref so the
+  // effect below runs only when the modal opens; rerunning it moved focus to the close
+  // button after every keystroke.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeRef.current();
     document.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -126,7 +131,7 @@ export function Modal({ open, title, onClose, children, color = "white", wide = 
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return (
