@@ -65,8 +65,8 @@ belongs here. The report keeps it in its own section.
   transactions carry a tax year that defaults to the date's year and can be set to the prior year.
 - Each spouse has their own limit (**$7,500** for 2026, plus a catch-up at 50 or older; *configurable*). The report
   shows each person's total against the limit.
-- Because both of you are covered by a 401(k) at work, the deduction phases out above an income range
-  (*configurable*). The report flags when AGI is in or above that range and leaves the exact deductible amount to
+- Because there's a 401(k) at work, the deduction phases out above an income range (*configurable*; the range
+  differs for the spouse covered by the plan and one who isn't). The report flags when AGI is in or above that range and leaves the exact deductible amount to
   tax software.
 
 ### 529 contributions (state return only)
