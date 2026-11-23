@@ -15,16 +15,20 @@ const OWNED = [
   "debts",
   "debt_payments",
   "assets",
+  "vendors",
+  "tax_documents",
+  "tax_years",
 ];
 
 // Collections the /api/sync/{collection} upsert endpoint accepts. Each record
 // in a sync is matched on (owner, external_id).
-const SYNCABLE = ["earners", "envelopes", "transactions", "debts", "debt_payments", "assets"];
+const SYNCABLE = ["earners", "envelopes", "vendors", "transactions", "debts", "debt_payments", "assets"];
 
 // Relation fields a sync may fill by the other record's external_id, e.g.
 // `envelope_external_id: "groceries"` on a transaction.
 const RELATIONS = {
-  transactions: { envelope: "envelopes", earner: "earners" },
+  transactions: { envelope: "envelopes", earner: "earners", vendor: "vendors" },
+  vendors: { default_envelope: "envelopes" },
   debt_payments: { debt: "debts" },
   assets: { debts: "debts" },
 };
@@ -131,6 +135,11 @@ function upsert(app, collectionName, ownerId, items) {
         }
 
         record.set(key, item[key]);
+      }
+
+      // A vendor named by the sync is the vendor: matching won't change it.
+      if (collectionName === "transactions" && (item.vendor || item.vendor_external_id) && item.vendor_locked === undefined) {
+        record.set("vendor_locked", true);
       }
 
       try {
@@ -592,6 +601,124 @@ function importBudgets(app, ownerId, months) {
   return result;
 }
 
+// ---------- Vendors ----------
+//
+// A transaction's `payee` is its statement value: what the bank (through n8n), an
+// import or a person wrote. Each vendor lists the statement values that belong to
+// it (`matches`); match.js decides which vendor a statement value is.
+
+function matcher() {
+  return require(`${__hooks}/finance/match.js`);
+}
+
+function jsonList(record, field) {
+  try {
+    const v = JSON.parse(record.getString(field) || "null");
+    return Array.isArray(v) ? v : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function loadVendors(app, ownerId) {
+  const rows = app.findRecordsByFilter("vendors", "owner = {:o}", "", 0, 0, { o: ownerId });
+  return rows.map((r) => ({ id: r.id, matches: jsonList(r, "matches"), default_envelope: r.get("default_envelope") }));
+}
+
+/**
+ * Links a transaction that is about to be saved to its vendor, unless someone
+ * picked the vendor by hand (vendor_locked). Spending with no envelope goes into
+ * the vendor's usual envelope. Runs before the save, so no hooks run twice.
+ */
+function applyVendor(app, record, isNew) {
+  if (record.getBool("vendor_locked")) return;
+  const payee = record.getString("payee");
+  const vendor = payee ? matcher().matchVendor(payee, loadVendors(app, record.get("owner"))) : null;
+  record.set("vendor", vendor ? vendor.id : "");
+  if (isNew && vendor && vendor.default_envelope && record.get("kind") === "expense" && !record.get("envelope") && !record.get("earner")) {
+    record.set("envelope", vendor.default_envelope);
+  }
+}
+
+/** A vendor of the household, or a 404. */
+function findVendor(app, ownerId, id) {
+  let v = null;
+  try { v = app.findRecordById("vendors", id); } catch (_) {}
+  if (!v || v.get("owner") !== ownerId) throw new NotFoundError("That vendor wasn't found.");
+  return v;
+}
+
+/**
+ * Links the household's transactions that have no vendor yet (and weren't set by
+ * hand) to this vendor where its patterns fit. Returns how many were linked.
+ */
+function backfillVendor(app, ownerId, vendorId) {
+  const vendor = findVendor(app, ownerId, vendorId);
+  const one = [{ id: vendor.id, matches: jsonList(vendor, "matches") }];
+  const rows = arrayOf(new DynamicModel({ id: "", payee: "" }));
+  app.db().newQuery(
+    "SELECT id, payee FROM transactions WHERE owner = {:o} AND vendor = '' AND vendor_locked = FALSE AND payee != ''",
+  ).bind({ o: ownerId }).all(rows);
+  let matched = 0;
+  const m = matcher();
+  for (const r of rows) {
+    if (!m.matchVendor(r.payee, one)) continue;
+    app.db().newQuery("UPDATE transactions SET vendor = {:v} WHERE id = {:id}").bind({ v: vendor.id, id: r.id }).execute();
+    matched++;
+  }
+  return matched;
+}
+
+/**
+ * Statement values with no vendor yet, grouped by their stable start, most
+ * frequent first. Spending and money back into an envelope count; income to the
+ * budget (paychecks, fills) is left out.
+ */
+function unmatchedStatements(app, ownerId) {
+  const rows = arrayOf(new DynamicModel({ payee: "", n: 0, total: -0, last: "" }));
+  app.db().newQuery(
+    "SELECT payee, COUNT(*) AS n, SUM(CASE WHEN kind = 'income' THEN -amount ELSE amount END) AS total, MAX(date) AS last " +
+    "FROM transactions WHERE owner = {:o} AND vendor = '' AND payee != '' AND earner = '' AND (kind = 'expense' OR envelope != '') GROUP BY payee",
+  ).bind({ o: ownerId }).all(rows);
+  const groups = {};
+  const m = matcher();
+  for (const r of rows) {
+    const key = m.normalizeStatement(r.payee);
+    const g = groups[key] || (groups[key] = { pattern: key, count: 0, total: 0, last_date: "", example: r.payee });
+    g.count += r.n;
+    g.total = Math.round((g.total + r.total) * 100) / 100;
+    if (r.last > g.last_date) { g.last_date = r.last; g.example = r.payee; }
+  }
+  return Object.keys(groups).map((k) => groups[k])
+    .sort((a, b) => b.count - a.count || b.total - a.total || (a.pattern < b.pattern ? -1 : 1));
+}
+
+/** Moves one vendor's transactions, documents and patterns into another, then deletes it. */
+function mergeVendors(app, ownerId, fromId, intoId) {
+  if (fromId === intoId) throw badRequest("Pick a different vendor to merge into.");
+  let moved = 0;
+  app.runInTransaction((tx) => {
+    const from = findVendor(tx, ownerId, fromId);
+    const into = findVendor(tx, ownerId, intoId);
+    const patterns = jsonList(into, "matches");
+    for (const p of jsonList(from, "matches")) if (patterns.indexOf(p) === -1) patterns.push(p);
+    into.set("matches", patterns);
+    for (const f of ["default_envelope", "recurring", "tax_category", "legal_name", "address", "tin", "emoji", "color"]) {
+      if (!into.get(f) && from.get(f)) into.set(f, from.get(f));
+    }
+    if (!into.getFloat("expected_amount") && from.getFloat("expected_amount")) into.set("expected_amount", from.getFloat("expected_amount"));
+    if (!into.getInt("expected_day") && from.getInt("expected_day")) into.set("expected_day", from.getInt("expected_day"));
+    tx.save(into);
+    moved = tx.countRecords("transactions", $dbx.hashExp({ vendor: fromId }));
+    tx.db().newQuery("UPDATE transactions SET vendor = {:to} WHERE vendor = {:from} AND owner = {:o}")
+      .bind({ to: intoId, from: fromId, o: ownerId }).execute();
+    tx.db().newQuery("UPDATE tax_documents SET vendor = {:to} WHERE vendor = {:from} AND owner = {:o}")
+      .bind({ to: intoId, from: fromId, o: ownerId }).execute();
+    tx.delete(from);
+  });
+  return moved;
+}
+
 // ---------- Households ----------
 
 /** The id that owns the signed-in user's data: the head of their household. */
@@ -620,6 +747,7 @@ function findMember(app, headId, id) {
 }
 
 module.exports = {
+  applyVendor, backfillVendor, unmatchedStatements, mergeVendors,
   householdOf, requireHead, findMember,
   envelopeBalances, importBudgets,
   agentConfig, readPaystubWithAgent, adjustAssetValue, payDateOf,

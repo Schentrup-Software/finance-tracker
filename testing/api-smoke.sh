@@ -137,5 +137,39 @@ check "the head removes a member" "$(j -H "$A" -X DELETE "$B/api/household/membe
 check "a removed member can't sign in" "$(j -X POST "$B/api/collections/users/auth-with-password" -d "{\"identity\":\"m-$RUN@smoke.test\",\"password\":\"newpassword456\"}" | field '["status"]')" "400"
 check "their envelope stays with the household" "$(j -H "$A" "$B/api/collections/envelopes/records/$MENV" | field '["name"]')" "Date night"
 
+# Vendors: matched from the statement text, back-filled, merged; tax fields and documents stay in the household
+vendor_of() { j -H "$A" "$B/api/collections/transactions/records/$1" | field '["vendor"]'; }
+BILLS=$(j -H "$A" -X POST "$B/api/collections/envelopes/records" -d '{"name":"Bills"}' | field '["id"]')
+OLD=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d '{"kind":"expense","amount":200,"date":"2026-12-01","payee":"PAYPAL *STMARYSCHURCH 402-555-0100"}' | field '["id"]')
+CHURCH=$(j -H "$A" -X POST "$B/api/collections/vendors/records" -d "{\"name\":\"St Marys\",\"matches\":[\"PAYPAL *STMARYSCHURCH\"],\"default_envelope\":\"$BILLS\",\"tax_category\":\"charity\",\"external_id\":\"church\"}" | field '["id"]')
+check "an earlier payment isn't matched until back-filled" "$(vendor_of "$OLD")" ""
+check "back-fill links earlier payments" "$(j -H "$A" -X POST "$B/api/vendors/$CHURCH/backfill" | field '["matched"]')" "1"
+check "back-filled payment has the vendor" "$(vendor_of "$OLD")" "$CHURCH"
+NEW=$(j -H "$A" -X POST "$B/api/sync/transactions" -d '{"records":[{"external_id":"bank-77","kind":"expense","amount":200,"date":"2027-01-01","payee":"PayPal *StMarysChurch 402-555-0177"}]}' | field '["records"][0]["id"]')
+check "a synced payment is matched on its statement text" "$(vendor_of "$NEW")" "$CHURCH"
+check "and lands in the vendor's usual envelope" "$(j -H "$A" "$B/api/collections/transactions/records/$NEW" | field '["envelope"]')" "$BILLS"
+j -H "$A" -X PATCH "$B/api/collections/transactions/records/$NEW" -d '{"payee":"Shell Oil 1234"}' > /dev/null
+check "changing the statement text matches again" "$(vendor_of "$NEW")" ""
+PICKED=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"expense\",\"amount\":5,\"date\":\"2027-01-02\",\"payee\":\"Cash at church\",\"vendor\":\"$CHURCH\",\"vendor_locked\":true}" | field '["id"]')
+check "a vendor picked by hand stays" "$(vendor_of "$PICKED")" "$CHURCH"
+check "a sync can name the vendor" "$(j -H "$A" -X POST "$B/api/sync/transactions" -d '{"records":[{"external_id":"bank-78","kind":"expense","amount":9,"date":"2027-01-03","payee":"Cash","vendor_external_id":"church"}]}' | field '["records"][0]["vendor_locked"]')" "True"
+j -H "$A" -X POST "$B/api/collections/transactions/records" -d '{"kind":"expense","amount":20,"date":"2027-01-02","payee":"PUBLIX #1234"}' > /dev/null
+j -H "$A" -X POST "$B/api/collections/transactions/records" -d '{"kind":"expense","amount":25,"date":"2027-01-09","payee":"Publix #999"}' > /dev/null
+check "unmatched statement text is grouped by its stable start" "$(j -H "$A" "$B/api/vendors/unmatched" | python3 -c 'import sys,json; print([(i["pattern"],i["count"]) for i in json.load(sys.stdin)["items"] if i["pattern"]=="PUBLIX"])')" "[('PUBLIX', 2)]"
+PUB=$(j -H "$A" -X POST "$B/api/collections/vendors/records" -d '{"name":"Publix","matches":["PUBLIX"]}' | field '["id"]')
+j -H "$A" -X POST "$B/api/vendors/$PUB/backfill" > /dev/null
+check "merging moves the payments" "$(j -H "$A" -X POST "$B/api/vendors/$PUB/merge" -d "{\"into\":\"$CHURCH\"}" | field '["moved"]')" "2"
+check "and the statement text" "$(j -H "$A" "$B/api/collections/vendors/records/$CHURCH" | field '["matches"]')" "['PAYPAL *STMARYSCHURCH', 'PUBLIX']"
+check "another household can't see my vendors" "$(j -H "$OTHER" "$B/api/collections/vendors/records/$CHURCH" | field '["status"]')" "404"
+check "another household can't tag a payment with my vendor" "$(j -H "$OTHER" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"expense\",\"amount\":1,\"date\":\"2027-01-01\",\"vendor\":\"$CHURCH\"}" | field '["status"]')" "400"
+check "another household can't back-fill my vendor" "$(j -H "$OTHER" -X POST "$B/api/vendors/$CHURCH/backfill" | field '["status"]')" "404"
+check "another household's sync doesn't match my vendors" "$(j -H "$OTHER" -X POST "$B/api/sync/transactions" -d '{"records":[{"external_id":"x-1","kind":"expense","amount":1,"date":"2027-01-01","payee":"PAYPAL *STMARYSCHURCH 1"}]}' | field '["records"][0]["vendor"]')" ""
+check "another household can't point a vendor at my envelope" "$(j -H "$OTHER" -X POST "$B/api/collections/vendors/records" -d "{\"name\":\"x\",\"default_envelope\":\"$BILLS\"}" | field '["status"]')" "400"
+printf '%%PDF-1.4\n%%%%EOF\n' > /tmp/smoke-receipt.pdf
+DOC=$(curl -s -H "$A" -X POST "$B/api/collections/tax_documents/records" -F "file=@/tmp/smoke-receipt.pdf;type=application/pdf" -F "tax_year=2027" -F "kind=year_end_statement" -F "vendor=$CHURCH" | field '["id"]')
+check "a year-end statement is stored for the household" "$(j -H "$A" "$B/api/collections/tax_documents/records/$DOC" | field '["kind"]')" "year_end_statement"
+check "another household can't attach to my vendor" "$(curl -s -H "$OTHER" -X POST "$B/api/collections/tax_documents/records" -F "file=@/tmp/smoke-receipt.pdf;type=application/pdf" -F "tax_year=2027" -F "vendor=$CHURCH" | field '["status"]')" "400"
+check "tax years are one per household per year" "$(j -H "$A" -X POST "$B/api/collections/tax_years/records" -d '{"year":2027,"agi":1}' > /dev/null; j -H "$A" -X POST "$B/api/collections/tax_years/records" -d '{"year":2027,"agi":2}' | field '["status"]')" "400"
+
 echo
 [ "$FAILS" -eq 0 ] && echo "All API checks passed." || { echo "$FAILS check(s) failed."; exit 1; }

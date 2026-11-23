@@ -2,7 +2,8 @@
 
 import pb from "./pocketbaseClient";
 import type {
-  Allocation, Asset, BaseRecord, Budget, Debt, DebtPayment, Draft, Earner, Envelope, Paystub, PaystubLine, Transaction,
+  Allocation, Asset, BaseRecord, Budget, Debt, DebtPayment, Draft, Earner, Envelope, Paystub, PaystubLine, TaxDocument,
+  TaxYear, Transaction, Vendor,
 } from "./types";
 import { monthRange } from "~/lib/dates";
 
@@ -70,7 +71,8 @@ export async function refreshAuth(): Promise<boolean> {
 type Name =
   | "envelopes" | "budgets" | "allocations" | "transactions"
   | "debts" | "debt_payments" | "assets"
-  | "earners" | "paystubs" | "paystub_lines";
+  | "earners" | "paystubs" | "paystub_lines"
+  | "vendors" | "tax_documents" | "tax_years";
 
 function list<T>(name: Name, options: { filter?: string; sort?: string } = {}) {
   return pb.collection(name).getFullList<T>({ batch: 500, ...options });
@@ -261,6 +263,88 @@ export const createTransaction = (d: Draft<Transaction>) => create<Transaction>(
 export const updateTransaction = (id: string, d: Draft<Transaction>) => update<Transaction>("transactions", id, d);
 export const deleteTransaction = (id: string) => remove("transactions", id);
 
+/** All transactions from `from` (inclusive) to `to` (exclusive), both YYYY-MM-DD. */
+export const listTransactionsBetween = (from: string, to: string) =>
+  list<Transaction>("transactions", {
+    filter: pb.filter("date >= {:s} && date < {:e}", { s: `${from} 00:00:00.000Z`, e: `${to} 00:00:00.000Z` }),
+    sort: "-date,-created",
+  });
+
+// ---------- Vendors ----------
+
+export const listVendors = () => list<Vendor>("vendors", { sort: "name" });
+export const createVendor = (d: Draft<Vendor>) => create<Vendor>("vendors", d);
+export const updateVendor = (id: string, d: Draft<Vendor>) => update<Vendor>("vendors", id, d);
+export const deleteVendor = (id: string) => remove("vendors", id);
+
+export const listVendorTransactions = (vendorId: string) =>
+  list<Transaction>("transactions", { filter: pb.filter("vendor = {:v}", { v: vendorId }), sort: "-date,-created" });
+
+/** Links earlier transactions with no vendor that fit the vendor's statement values. */
+export function backfillVendor(id: string) {
+  return pb.send<{ matched: number }>(`/api/vendors/${id}/backfill`, { method: "POST" });
+}
+
+/** Moves a vendor's transactions, documents and statement values into another vendor, then deletes it. */
+export function mergeVendor(id: string, into: string) {
+  return pb.send<{ moved: number }>(`/api/vendors/${id}/merge`, { method: "POST", body: { into } });
+}
+
+export interface UnmatchedStatement {
+  pattern: string;
+  count: number;
+  total: number;
+  last_date: string;
+  example: string;
+}
+
+/** Statement values with no vendor yet, most frequent first. */
+export async function listUnmatched(): Promise<UnmatchedStatement[]> {
+  return (await pb.send<{ items: UnmatchedStatement[] }>("/api/vendors/unmatched", { method: "GET" })).items;
+}
+
+// ---------- Taxes ----------
+
+export async function getTaxYear(year: number): Promise<TaxYear | null> {
+  const rows = await list<TaxYear>("tax_years", { filter: pb.filter("year = {:y}", { y: year }) });
+  return rows[0] ?? null;
+}
+
+export function saveTaxYear(existing: TaxYear | null | undefined, data: Draft<TaxYear>) {
+  return existing ? update<TaxYear>("tax_years", existing.id, data) : create<TaxYear>("tax_years", data);
+}
+
+export const listTaxDocuments = (year: number) =>
+  list<TaxDocument>("tax_documents", { filter: pb.filter("tax_year = {:y}", { y: year }), sort: "created" });
+
+export const listTransactionDocuments = (txId: string) =>
+  list<TaxDocument>("tax_documents", { filter: pb.filter("transaction = {:t}", { t: txId }), sort: "created" });
+
+export async function uploadTaxDocument(file: File, data: Draft<TaxDocument>): Promise<TaxDocument> {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(data)) if (v !== undefined && v !== null) form.append(k, String(v));
+  form.append("file", file);
+  form.append("owner", householdId());
+  return pb.collection("tax_documents").create<TaxDocument>(form);
+}
+
+export const deleteTaxDocument = (id: string) => remove("tax_documents", id);
+
+/** A short-lived link to a tax document (files are protected). */
+export async function taxDocumentUrl(d: TaxDocument, download = false): Promise<string> {
+  const token = await pb.files.getToken();
+  return pb.files.getURL(d, d.file, { token, ...(download ? { download: true } : {}) });
+}
+
+/** The calendar year's paystubs and lines, for the AGI estimate. */
+export async function loadYearPaystubs(year: number) {
+  const ys = `${year}-01-01 00:00:00.000Z`, ye = `${year + 1}-01-01 00:00:00.000Z`;
+  const [paystubs, lines] = await Promise.all([
+    list<Paystub>("paystubs", { filter: pb.filter("pay_date >= {:s} && pay_date < {:e}", { s: ys, e: ye }) }),
+    list<PaystubLine>("paystub_lines", { filter: pb.filter("paystub.pay_date >= {:s} && paystub.pay_date < {:e}", { s: ys, e: ye }) }),
+  ]);
+  return { paystubs, lines };
+}
 
 // ---------- Debts ----------
 

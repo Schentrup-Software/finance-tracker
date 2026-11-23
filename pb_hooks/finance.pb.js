@@ -101,6 +101,9 @@ onRecordCreateRequest(
   "debts",
   "debt_payments",
   "assets",
+  "vendors",
+  "tax_documents",
+  "tax_years",
 );
 
 // ---------- Debt payments keep the debt's balance current ----------
@@ -128,6 +131,43 @@ onRecordDelete((e) => {
   e.next();
   lib.adjustDebtBalance(e.app, debt, amount);
 }, "debt_payments");
+
+// ---------- Vendors ----------
+
+// A transaction is linked to the vendor whose statement values fit its payee,
+// before it is saved. A vendor picked by hand (vendor_locked) is left alone.
+onRecordCreate((e) => {
+  require(`${__hooks}/finance/lib.js`).applyVendor(e.app, e.record, true);
+  e.next();
+}, "transactions");
+
+onRecordUpdate((e) => {
+  const before = e.record.original();
+  const unlocked = before.getBool("vendor_locked") && !e.record.getBool("vendor_locked");
+  if (unlocked || before.getString("payee") !== e.record.getString("payee")) {
+    require(`${__hooks}/finance/lib.js`).applyVendor(e.app, e.record, false);
+  }
+  e.next();
+}, "transactions");
+
+// POST /api/vendors/{id}/backfill: link earlier transactions with no vendor that fit this vendor.
+routerAdd("POST", "/api/vendors/{id}/backfill", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  return e.json(200, { matched: lib.backfillVendor(e.app, lib.householdOf(e.auth), e.request.pathValue("id")) });
+}, $apis.requireAuth("users"));
+
+// POST /api/vendors/{id}/merge  { "into": "<vendor id>" }
+routerAdd("POST", "/api/vendors/{id}/merge", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  const into = String((e.requestInfo().body || {}).into || "");
+  return e.json(200, { moved: lib.mergeVendors(e.app, lib.householdOf(e.auth), e.request.pathValue("id"), into) });
+}, $apis.requireAuth("users"));
+
+// GET /api/vendors/unmatched -> { items: [ { pattern, count, total, last_date, example } ] }
+routerAdd("GET", "/api/vendors/unmatched", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  return e.json(200, { items: lib.unmatchedStatements(e.app, lib.householdOf(e.auth)) });
+}, $apis.requireAuth("users"));
 
 // ---------- Paychecks ----------
 

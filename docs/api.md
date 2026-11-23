@@ -55,15 +55,19 @@ Content-Type: application/json
 { "records": [ { "external_id": "...", ...fields } ] }
 ```
 
-- `{collection}` is one of `earners`, `envelopes`, `transactions`, `debts`, `debt_payments`, `assets`.
+- `{collection}` is one of `earners`, `envelopes`, `vendors`, `transactions`, `debts`, `debt_payments`, `assets`.
 - Every record needs an `external_id`: your stable id from the source (bank transaction
   id, account number, a slug you choose). A record with an `external_id` you've sent before
   is **updated**; a new one is **created**. Re-running a workflow never makes duplicates.
 - Only the fields you send are changed on update.
 - Relations can point at other records by their external id with a `_external_id` suffix:
-  `envelope_external_id` and `earner_external_id` on transactions, `debt_external_id` on debt payments,
+  `envelope_external_id`, `earner_external_id` and `vendor_external_id` on transactions,
+  `default_envelope_external_id` on vendors, `debt_external_id` on debt payments,
   `debts_external_id` (an array) on assets. You can also send the PocketBase `id` directly
-  (`envelope`, `debt`, `debts`).
+  (`envelope`, `vendor`, `debt`, `debts`).
+- Send bank transactions with the bank's description as `payee`: the server matches it to a
+  vendor (see [Vendors](#vendors)). Naming a vendor yourself (`vendor` or `vendor_external_id`)
+  sets `vendor_locked`, so matching leaves it alone.
 - Up to 500 records per request. The batch is one transaction: if any record is invalid,
   nothing is saved and you get a `400` with the record's index and the reason.
 - `owner`, `id`, `created` and `updated` are ignored if sent.
@@ -215,6 +219,39 @@ then saves it with three calls you can also use from n8n:
 3. `POST /api/sync/transactions` for the transactions. Each row's external id is a hash of
    its contents, so importing the same file again updates instead of duplicating.
 
+## Vendors
+
+Every transaction can belong to a **vendor**: who the money went to. A transaction's `payee` is
+its *statement value* (what the bank, an import or a person wrote). Each vendor lists the
+statement values that belong to it in `matches`.
+
+- When a transaction is created, or its `payee` changes, the server links it to the vendor
+  whose pattern it starts with (case and extra spaces don't matter, the longest pattern wins,
+  and a pattern must end at a word boundary: `AMAZON` matches `AMAZON.COM*2K4` but not
+  `AMAZONIA`). Spending with no envelope goes into the vendor's `default_envelope`.
+- A transaction with `vendor_locked: true` keeps the vendor it has.
+- Patterns are usually the statement text with trailing words that contain digits removed,
+  so `PAYPAL *STMARYSCHURCH 402-555-0100` and next month's `… 402-555-0177` both read
+  `PAYPAL *STMARYSCHURCH`.
+
+| Method | Path | Body | |
+| --- | --- | --- | --- |
+| `POST` | `/api/vendors/{id}/backfill` | | Links the household's transactions with no vendor (and not locked) that fit this vendor. `{ "matched": 3 }` |
+| `POST` | `/api/vendors/{id}/merge` | `{ "into": "<vendor id>" }` | Moves the vendor's transactions, documents and patterns into another vendor, then deletes it. `{ "moved": 12 }` |
+| `GET` | `/api/vendors/unmatched` | | Statement values with no vendor yet, grouped by pattern, most frequent first: `{ "items": [ { "pattern", "count", "total", "last_date", "example" } ] }`. Paychecks and income to the budget are left out |
+
+Adding a pattern to a vendor (a `PATCH` of `matches`) doesn't change earlier transactions;
+call `backfill` afterwards.
+
+## Taxes
+
+The app tracks deductible spending that comes out of the budget: donations, out-of-pocket
+medical, child care and traditional IRA contributions. A transaction's tax category is its own
+`tax_category` if set (`none` means not deductible), else its vendor's, else its envelope's.
+Receipts and charities' year-end statements are `tax_documents`; each year's AGI and IRS
+figures are a `tax_years` record. The year-end summary is worked out in the app
+(`app/lib/tax.ts`), not by the API.
+
 ## 3. Standard PocketBase endpoints
 
 Each collection also has the usual PocketBase CRUD API:
@@ -281,6 +318,7 @@ Anyone else gets `403` (not the head) or `404` (not in your household).
 | `goal` | number ≥ 0 | Yearly goal for annual envelopes |
 | `opening_balance` | number | Cash in the envelope at the end of `opening_date`. Set by an import |
 | `opening_date` | date | Balances count from here; earlier months show spending only |
+| `tax_category` | `charity` `medical` `child_care` `ira` or empty | Spending from this envelope counts toward it at tax time |
 | `external_id` | text | Unique per household |
 
 ### `budgets` — one per month
@@ -316,7 +354,64 @@ Envelope cash left = allocation (+ carried, for rollover envelopes) − the mont
 | `payee` | text | |
 | `note` | text | |
 | `account` | text | Bank or card account, e.g. `Visa` |
+| `vendor` | relation → vendors | Set by matching `payee`, or by hand |
+| `vendor_locked` | bool | The vendor was picked by hand; matching leaves it alone |
+| `tax_category` | `charity` `medical` `child_care` `ira` `none` or empty | Overrides the vendor's and envelope's category. Empty: use theirs |
+| `tax_amount` | number ≥ 0 | The deductible part, when it isn't all of it. `0` means the whole amount |
+| `tax_paid_by` | `hsa` `health_fsa` `insurance` or empty | Medical paid or paid back by one of these doesn't count |
+| `tax_year` | number | IRA contributions until the April deadline can count for the year before. `0` means the date's year |
+| `tax_person` | text | Whose IRA |
+| `tax_acknowledged` | bool | The charity's written acknowledgment is in hand (needed for a single gift of $250 or more) |
 | `external_id` | text | Unique per household |
+
+### `vendors` — who the money goes to
+
+| Field | Type | |
+| --- | --- | --- |
+| `name` | text, required | |
+| `emoji` | text | |
+| `color` | same values as envelopes | |
+| `matches` | JSON array of text | Statement values that belong to this vendor, e.g. `["PAYPAL *STMARYSCHURCH"]` |
+| `default_envelope` | relation → envelopes | New spending with no envelope goes here |
+| `recurring` | `weekly` `biweekly` `monthly` `quarterly` `annual` or empty | |
+| `expected_amount` | number ≥ 0 | Usual amount of a recurring payment |
+| `expected_day` | number 0–31 | Usual day of the month |
+| `tax_category` | `charity` `medical` `child_care` `ira` or empty | Every payment to this vendor counts toward it |
+| `legal_name`, `address` | text | For tax forms (Form 2441 needs a child care provider's) |
+| `tin` | text | EIN or SSN |
+| `notes` | text | |
+| `archived` | bool | Still matched, left out of lists |
+| `external_id` | text | Unique per household |
+
+### `tax_documents` — receipts and acknowledgments
+
+| Field | Type | |
+| --- | --- | --- |
+| `file` | file (PDF or image, 15 MB, protected), required | Upload as `multipart/form-data` |
+| `tax_year` | number, required | |
+| `kind` | `receipt` `acknowledgment` `year_end_statement` `other` | A `receipt` or `acknowledgment` on a gift, or the charity's `year_end_statement` for the year, counts as the acknowledgment |
+| `label` | text | |
+| `transaction` | relation → transactions | The payment it's for |
+| `vendor` | relation → vendors | For a year-end statement: covers every gift to the vendor that year |
+
+### `tax_years` — AGI and the IRS figures for a year
+
+One per household per `year`. Percentages are in percent (`7.5`).
+
+| Field | Type | |
+| --- | --- | --- |
+| `year` | number, required | |
+| `agi` | number | Adjusted gross income; the floors are a share of it |
+| `other_itemized` | number | Mortgage interest, state taxes and the like, reconciled by hand |
+| `confirmed` | bool | The figures were checked against the IRS |
+| `standard_deduction` | number | |
+| `charity_floor_pct`, `charity_cash_cap_pct` | number | Only giving above the floor counts; cash gifts are capped at this share of AGI |
+| `nonitemizer_charity_cap` | number | Cash gifts deductible without itemizing |
+| `medical_floor_pct` | number | Only medical above this share of AGI counts |
+| `care_cap_one`, `care_cap_two`, `qualifying_children` | number | Form 2441 expense caps |
+| `ira_limit`, `ira_catch_up` | number | Per person |
+| `ira_phaseout_start`, `ira_phaseout_end` | number | AGI range where a spouse covered at work loses the deduction |
+| `notes` | text | |
 
 ### `debts`
 
