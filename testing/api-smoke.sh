@@ -112,6 +112,17 @@ D5=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\
 COPY=$(j -H "$A" "$B/api/collections/paystubs/records?filter=transaction='$D5'" | field '["items"][0]["id"]')
 check "a repeat paycheck copies the employer line" "$(j -H "$A" "$B/api/collections/paystub_lines/records?filter=paystub='$COPY'%26%26employer_paid=true" | field '["totalItems"]')" "1"
 
+# Reimbursements: the deposit is net pay plus reimbursements (the check amount)
+E4=$(j -H "$A" -X POST "$B/api/collections/earners/records" -d '{"name":"Lee"}' | field '["id"]')
+D6=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E4\",\"amount\":3188.52,\"date\":\"2026-11-13 12:00:00.000Z\"}" | field '["id"]')
+check "a deposit with a reimbursement asks for a paystub" "$(status_of "$D6")" "needs_paystub"
+S4=$(j -H "$A" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\":\"$E4\",\"pay_date\":\"2026-11-13 12:00:00.000Z\",\"gross\":4791.67,\"net\":2925.35,\"deposit\":3188.52,\"source\":\"upload\"}" | field '["id"]')
+j -H "$A" -X POST "$B/api/collections/paystub_lines/records" -d "{\"paystub\":\"$S4\",\"category\":\"reimbursement\",\"label\":\"Gusto Health Insurance Offset\",\"amount\":263.17}" > /dev/null
+check "the paystub's check amount matches the deposit" "$(status_of "$D6")" "matched"
+D7=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E4\",\"amount\":3188.53,\"date\":\"2026-11-27 12:00:00.000Z\"}" | field '["id"]')
+check "a check one cent off reuses the paystub" "$(status_of "$D7")" "matched"
+check "the copy keeps the take-home apart from the reimbursement" "$(j -H "$A" "$B/api/collections/paystubs/records?filter=transaction='$D7'" | field '["items"][0]["net"]')" "2925.36"
+
 # Annual envelopes, imported months and opening balances
 carried_of() { j -H "$A" "$B/api/finance/balances?month=$1" | field "[\"carried\"][\"$2\"]"; }
 XMAS=$(j -H "$A" -X POST "$B/api/sync/envelopes" -d '{"records":[{"external_id":"imp-xmas","name":"Christmas","period":"annual","goal":3600,"rollover":true,"opening_balance":500,"opening_date":"2026-11-10 23:59:59.999Z"}]}' | field '["records"][0]["id"]')

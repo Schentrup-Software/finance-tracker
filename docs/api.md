@@ -167,15 +167,21 @@ Each paycheck in the household is an **earner** (`earners`). Each paystub (`pays
 the gross and net pay and one `paystub_lines` row for everything taken out before the
 money reaches the bank: taxes, healthcare, retirement, 401(k) loan repayments and so on.
 
+Reimbursements paid after net pay (an insurance offset, a stipend) are `paystub_lines` with
+category `reimbursement`. They land in the bank with the take-home pay, so a paystub's
+`deposit` is the stub's check amount: `net` plus its reimbursements. When `deposit` is 0
+or not set, the deposit is `net`.
+
 When an income transaction with an `earner` is created (in the app or through n8n), the
-server compares its `amount` with that earner's most recent paystub's `net`:
+server compares its `amount` with that earner's most recent paystub's `deposit` (or `net`):
 
 - **Within one cent:** pay, taxes and deductions are assumed unchanged. The server copies
-  the last paystub and its lines (`source: "repeat"`), dated on the deposit, and sets the
+  the last paystub and its lines (`source: "repeat"`), dated on the deposit (any one-cent
+  difference goes into `net`), and sets the
   transaction's `paystub_status` to `matched`.
 - **Different, or no paystub yet:** `paystub_status` becomes `needs_paystub`, and the app
   shows a prompt to upload that paycheck's paystub. When a paystub is saved for that
-  earner with the same net pay within a week of the deposit, it is tied to the deposit and
+  earner with the same `deposit` (or net pay) within a week of the deposit, it is tied to the deposit and
   the status becomes `matched`.
 
 Changing a deposit's amount, date or earner runs the check again. Deleting a deposit
@@ -531,6 +537,7 @@ One per household per `year`. Percentages are in percent (`7.5`).
 | `period_start`, `period_end` | date | |
 | `gross` | number | |
 | `net` | number | Take-home pay |
+| `deposit` | number | What lands in the bank: `net` plus reimbursements (the check amount). 0 = same as `net` |
 | `file` | file (PDF or image, 15 MB, protected) | |
 | `source` | `upload` `manual` `repeat` | `repeat` = copied by the server |
 | `transaction` | relation → transactions | The deposit it explains |
@@ -542,7 +549,7 @@ One per household per `year`. Percentages are in percent (`7.5`).
 | Field | Type | |
 | --- | --- | --- |
 | `paystub` | relation → paystubs, required | |
-| `category` | required: `federal_tax` `state_tax` `local_tax` `social_security` `medicare` `medical` `dental` `vision` `hsa` `fsa` `life` `disability` `401k` `roth_401k` `retirement_other` `401k_loan` `loan_other` `other_pre_tax` `other_post_tax` | |
+| `category` | required: `federal_tax` `state_tax` `local_tax` `social_security` `medicare` `medical` `dental` `vision` `hsa` `fsa` `life` `disability` `401k` `roth_401k` `retirement_other` `401k_loan` `loan_other` `other_pre_tax` `other_post_tax` `reimbursement` | |
 | `label` | text | As printed on the stub |
 | `amount` | number ≥ 0 | |
 | `debt` | relation → debts | For loan lines: the debt it pays down |

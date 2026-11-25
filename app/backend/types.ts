@@ -214,6 +214,8 @@ export const PAYSTUB_CATEGORIES = [
   "401k", "roth_401k", "retirement_other",
   "401k_loan", "loan_other",
   "other_pre_tax", "other_post_tax",
+  // Paid after net pay (an insurance offset, a stipend): it lands in the bank too.
+  "reimbursement",
 ] as const;
 export type PaystubCategory = (typeof PAYSTUB_CATEGORIES)[number];
 
@@ -224,6 +226,8 @@ export interface Paystub extends BaseRecord {
   period_end: string;
   gross: number;
   net: number;
+  /** What lands in the bank: net pay plus reimbursements (the stub's check amount). 0 = same as net. */
+  deposit: number;
   file: string;
   source: "upload" | "manual" | "repeat" | "";
   transaction: string;
