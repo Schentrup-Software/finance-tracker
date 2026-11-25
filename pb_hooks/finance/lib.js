@@ -207,6 +207,11 @@ function setPaystubStatus(app, tx, status) {
   tx.set("paystub_status", status);
 }
 
+/** What a paystub puts in the bank: its check amount (net plus reimbursements), else its net pay. */
+function depositOf(paystub) {
+  return paystub.getFloat("deposit") || paystub.getFloat("net");
+}
+
 function paystubsForTransaction(app, txId) {
   return app.findRecordsByFilter("paystubs", "transaction = {:tx}", "", 0, 0, { tx: txId });
 }
@@ -219,7 +224,7 @@ function paystubsForTransaction(app, txId) {
 function matchPaycheck(app, tx) {
   if (tx.get("kind") !== "income" || !tx.get("earner")) return { status: "", template: null };
   const prev = previousPaystub(app, tx.get("owner"), tx.get("earner"), tx.getString("date"), tx.id);
-  if (prev && sameMoney(prev.getFloat("net"), tx.getFloat("amount"))) {
+  if (prev && sameMoney(depositOf(prev), tx.getFloat("amount"))) {
     return { status: "matched", template: prev };
   }
   return { status: "needs_paystub", template: null };
@@ -233,7 +238,10 @@ function repeatPaystub(app, template, tx) {
   copy.set("earner", template.get("earner"));
   copy.set("pay_date", tx.getString("date"));
   copy.set("gross", template.getFloat("gross"));
-  copy.set("net", tx.getFloat("amount"));
+  // The deposit can be a cent off the last one; that cent is in the take-home pay.
+  const cents = tx.getFloat("amount") - depositOf(template);
+  copy.set("net", Math.round((template.getFloat("net") + cents) * 100) / 100);
+  if (template.getFloat("deposit")) copy.set("deposit", tx.getFloat("amount"));
   copy.set("source", "repeat");
   copy.set("transaction", tx.id);
   copy.set("notes", "Same as the paystub from " + template.getString("pay_date").slice(0, 10));
@@ -296,7 +304,7 @@ function attachPaystub(app, paystub) {
       0,
       { owner: paystub.get("owner"), earner: paystub.get("earner"), from: from, to: to },
     );
-    const hit = waiting.find((t) => sameMoney(t.getFloat("amount"), paystub.getFloat("net")));
+    const hit = waiting.find((t) => sameMoney(t.getFloat("amount"), depositOf(paystub)));
     if (!hit) return;
     txId = hit.id;
     paystub.set("transaction", txId);
@@ -394,13 +402,16 @@ const PAYSTUB_PROMPT = [
   "Read this paystub and reply with ONLY a JSON object, no other text, in this shape:",
   '{"pay_date":"YYYY-MM-DD","period_start":"YYYY-MM-DD","period_end":"YYYY-MM-DD","employer_name":"","gross":0,"net":0,',
   '"lines":[{"label":"as printed","category":"one of the categories","amount":0}],',
-  '"employer":[{"label":"as printed","category":"one of the categories","amount":0}]}',
+  '"employer":[{"label":"as printed","category":"one of the categories","amount":0}],',
+  '"reimbursements":[{"label":"as printed","amount":0}],"check_amount":0}',
   "Use this pay period's amounts, not year-to-date. Amounts are positive numbers in dollars.",
   "lines are every deduction and tax taken from gross pay. Do not include earnings lines or net pay in lines.",
   "employer is what the employer paid on top of gross pay (employer contributions such as employer-paid medical, dental or vision insurance, a 401(k)",
   "match or contribution, or an HSA contribution). Use [] if there are none. Employer contributions never go in lines,",
   "and employer-paid taxes go in neither list. An employer 401(k) contribution is category 401k (traditional),",
   "even when the employee's own contributions are Roth.",
+  "reimbursements are amounts paid on top of net pay (insurance offsets, stipends, expense reimbursements) with a",
+  "non-zero amount this period; check_amount is what was deposited (net pay plus reimbursements).",
   "Categories: federal_tax, state_tax, local_tax, social_security, medicare, medical, dental, vision, hsa, fsa, life,",
   "disability, 401k, roth_401k, retirement_other, 401k_loan, loan_other, other_pre_tax, other_post_tax.",
   "Use null for anything you can't find.",

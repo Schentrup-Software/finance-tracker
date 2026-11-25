@@ -152,10 +152,10 @@ test("paychecks: read a PDF paystub, then match the next paycheck to the cent", 
   await page.getByRole("button", { name: "Income", exact: true }).click();
   d = page.getByRole("dialog");
   await d.getByLabel("Whose paycheck?").selectOption({ label: "Joey" });
-  await d.getByLabel("Amount deposited").fill("2313.10");
+  await d.getByLabel("Amount deposited").fill("2363.10");
   await d.getByLabel("Date").fill("2026-11-21");
   await d.getByRole("button", { name: "Add income" }).click();
-  await expect(page.getByText(/Joey paycheck of \$2,313\.10 on Nov 21 is different/)).toBeVisible();
+  await expect(page.getByText(/Joey paycheck of \$2,363\.10 on Nov 21 is different/)).toBeVisible();
 
   await page.getByRole("button", { name: "Upload paystub" }).click();
   d = page.getByRole("dialog");
@@ -167,6 +167,9 @@ test("paychecks: read a PDF paystub, then match the next paycheck to the cent", 
   // Employer contributions are read into their own section, outside the take-home check.
   await expect(d.getByText("Paid by your employer")).toBeVisible();
   await expect(d.getByText("+$341.34")).toBeVisible();
+  // The health insurance offset is paid on top of take-home, so the bank got the check amount.
+  await expect(d.getByLabel("Reimbursement", { exact: true })).toHaveValue("Health Insurance Offset");
+  await expect(d.getByText("$2,363.10")).toBeVisible();
   await d.getByRole("button", { name: "Add an employer contribution" }).scrollIntoViewIfNeeded();
   if (process.env.SCREENSHOTS) await d.screenshot({ path: `${process.env.SCREENSHOTS}/05b-employer-contributions.png` });
   await shot(page, "05-paystub-review");
@@ -180,7 +183,7 @@ test("paychecks: read a PDF paystub, then match the next paycheck to the cent", 
   // Next paycheck is a cent off: same taxes and deductions are assumed.
   await page.getByRole("button", { name: "Income", exact: true }).click();
   d = page.getByRole("dialog");
-  await d.getByLabel("Amount deposited").fill("2313.11");
+  await d.getByLabel("Amount deposited").fill("2363.11");
   await d.getByLabel("Date").fill("2026-11-28");
   await d.getByRole("button", { name: "Add income" }).click();
   await expect(page.getByText(/is different/)).toHaveCount(0);

@@ -15,7 +15,7 @@ import {
 import { monthLabel, shortDate, todayISO } from "~/lib/dates";
 import { money, parseMoney, round2 } from "~/lib/money";
 import {
-  CATEGORY_GROUPS, CATEGORY_LABELS, CONTRIBUTION_ASSET_TYPES, EMPLOYER_CATEGORIES, fromAgent, groupOf,
+  CATEGORY_GROUPS, CATEGORY_LABELS, CONTRIBUTION_ASSET_TYPES, EMPLOYER_CATEGORIES, depositAmount, fromAgent, groupOf,
   isContributionCategory, isLoanCategory, readPaystub, readingLooksGood, totalsByCategory, totalsByGroup,
   unexplained, type PaystubReading,
 } from "~/lib/paystub";
@@ -138,7 +138,7 @@ function BeforeTheBank({ data, earnerById, month, onOpen, onEditEarner }: {
   const shown = range === "month" ? { paystubs: data.paystubs, lines: data.lines } : data.year;
   const linesByStub = useMemo(() => {
     const m = new Map<string, number>();
-    for (const l of data.lines) if (!l.employer_paid) m.set(l.paystub, round2((m.get(l.paystub) ?? 0) + l.amount));
+    for (const l of data.lines) if (!l.employer_paid && l.category !== "reimbursement") m.set(l.paystub, round2((m.get(l.paystub) ?? 0) + l.amount));
     return m;
   }, [data.lines]);
 
@@ -205,7 +205,8 @@ function Breakdown({ paystubs, lines, earnerById, empty, detailed }: {
   const gross = round2(paystubs.reduce((s, p) => s + p.gross, 0));
   const net = round2(paystubs.reduce((s, p) => s + p.net, 0));
   const employerLines = lines.filter((l) => l.employer_paid);
-  lines = lines.filter((l) => !l.employer_paid);
+  const reimbursed = round2(lines.filter((l) => l.category === "reimbursement").reduce((s, l) => s + l.amount, 0));
+  lines = lines.filter((l) => !l.employer_paid && l.category !== "reimbursement");
   const groups = totalsByGroup(lines).filter((g) => g.total > 0);
   const employerTotal = round2(employerLines.reduce((s, l) => s + l.amount, 0));
 
@@ -266,6 +267,16 @@ function Breakdown({ paystubs, lines, earnerById, empty, detailed }: {
           </li>
         ))}
       </ul>
+      {reimbursed > 0 && (
+        <div className="c-mint mt-5 flex items-center gap-3 rounded-2xl px-4 py-3 font-bold" style={{ background: "var(--c)" }}>
+          <span className="text-xl" aria-hidden="true">↩️</span>
+          <span className="flex-1">
+            Reimbursements
+            <span className="block text-xs font-semibold opacity-70">Paid with the take-home, so the bank got {money(round2(net + reimbursed), { cents: true })}</span>
+          </span>
+          <span className="num font-black">+{money(reimbursed, { cents: true })}</span>
+        </div>
+      )}
       {employerTotal > 0 && (
         <div className="c-sky mt-5 rounded-2xl px-4 py-3" style={{ background: "var(--c)" }}>
           <div className="flex items-center gap-3 font-bold">
@@ -447,6 +458,7 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
     setLines(withDebts([
       ...r.lines.map((l) => ({ ...l, debt: "", asset: "" })),
       ...r.employer.map((l) => ({ ...l, debt: "", asset: "", employer_paid: true })),
+      ...r.reimbursements.map((l) => ({ ...l, debt: "", asset: "" })),
     ], previous));
   }
 
@@ -510,7 +522,7 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
     try {
       await savePaystub(existing, {
         earner, pay_date: toPbDate(payDate), period_start: toPbDate(periodStart), period_end: toPbDate(periodEnd),
-        gross: parseMoney(gross), net: parseMoney(net),
+        gross: parseMoney(gross), net: parseMoney(net), deposit,
         source: existing?.source && existing.source !== "repeat" ? existing.source : file ? "upload" : "manual",
         ...(initial.tx ? { transaction: initial.tx.id } : {}),
       }, lines.filter((l) => l.amount > 0), file);
@@ -534,7 +546,9 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
     }
   }
 
-  const gap = unexplained(parseMoney(gross), parseMoney(net), lines.filter((l) => !l.employer_paid));
+  const isReimbursement = (l: LineDraft) => l.category === "reimbursement";
+  const gap = unexplained(parseMoney(gross), parseMoney(net), lines.filter((l) => !l.employer_paid && !isReimbursement(l)));
+  const deposit = depositAmount(parseMoney(net), lines.filter(isReimbursement));
   const setLine = (i: number, patch: Partial<LineDraft>) => setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
   const indexed = lines.map((l, i) => ({ l, i }));
   const employerTotal = round2(lines.filter((l) => l.employer_paid).reduce((s, l) => s + (l.amount || 0), 0));
@@ -635,7 +649,7 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
           <div>
             <div className="field-label">Taken out of this paycheck</div>
             <ul className="space-y-2">
-              {indexed.filter(({ l }) => !l.employer_paid).map(lineRow)}
+              {indexed.filter(({ l }) => !l.employer_paid && !isReimbursement(l)).map(lineRow)}
             </ul>
             <button type="button" className="btn-ghost mt-2 text-sm"
               onClick={() => setLines((ls) => [...ls, { category: "federal_tax", label: "", amount: 0, debt: "", asset: "" }])}>
@@ -648,6 +662,38 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
             {Math.abs(gap) < 0.01
               ? "✓ Gross minus everything above equals the take-home."
               : `${money(Math.abs(gap), { cents: true })} ${gap > 0 ? "isn't accounted for. Add the missing line." : "too much is listed. Check the amounts."}`}
+          </div>
+
+          <div>
+            <div className="field-label">Reimbursements</div>
+            <p className="mb-2 text-xs font-semibold opacity-70">
+              Paid on top of take-home pay (an insurance offset, a stipend), so they land in the bank with it.
+            </p>
+            <ul className="space-y-2">
+              {indexed.filter(({ l }) => isReimbursement(l)).map(({ l, i }) => (
+                <li key={i} className="grid grid-cols-[1fr_120px_auto] items-center gap-2 rounded-2xl bg-white/70 p-3">
+                  <input aria-label="Reimbursement" className="input !py-2 text-sm" placeholder="As printed on the paystub"
+                    value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} />
+                  <input aria-label="Reimbursement amount" className="input num !py-2 text-right text-sm" inputMode="decimal" type="number"
+                    step="0.01" min="0" value={l.amount || ""} onChange={(e) => setLine(i, { amount: parseMoney(e.target.value) })} />
+                  <button type="button" aria-label="Remove line" className="opacity-50 hover:opacity-100"
+                    onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))}><Icon name="trash" className="h-4 w-4" /></button>
+                </li>
+              ))}
+            </ul>
+            <button type="button" className="btn-ghost mt-2 text-sm"
+              onClick={() => setLines((ls) => [...ls, { category: "reimbursement", label: "", amount: 0, debt: "", asset: "" }])}>
+              <Icon name="plus" className="h-4 w-4" /> Add a reimbursement
+            </button>
+            <div className="mt-2 flex items-baseline justify-between gap-3 rounded-2xl bg-white/70 px-4 py-3 text-sm font-black">
+              <span>Lands in the bank (take-home plus reimbursements)</span>
+              <span className="num">{money(deposit, { cents: true })}</span>
+            </div>
+            {initial.tx && Math.abs(initial.tx.amount - deposit) >= 0.01 && (
+              <p className="c-butter mt-2 rounded-2xl px-4 py-3 text-sm font-black" style={{ background: "var(--c)" }}>
+                The deposit was {money(initial.tx.amount, { cents: true })}. Check the take-home pay and reimbursements.
+              </p>
+            )}
           </div>
 
           <div>

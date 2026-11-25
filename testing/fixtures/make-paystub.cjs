@@ -31,6 +31,12 @@ const html = `<!doctype html><html><body style="font-family:Arial;font-size:12px
 <tr><td>Employee Medical Insurance</td><td align=right>236.34</td><td align=right>4,955.06</td></tr>
 <tr><td>Traditional 401(k)</td><td align=right>105.00</td><td align=right>2,310.00</td></tr></table>
 <h3>Summary</h3>
+<table style="width:100%"><tr><th align=left>Description</th><th>this period</th><th>year to date</th></tr>
+<tr><td>Net Pay</td><td align=right>2,313.10</td><td align=right>50,888.20</td></tr>
+<tr><td>Total Reimbursements</td><td align=right>50.00</td><td align=right>1,100.00</td></tr>
+<tr><td>Health Insurance Offset</td><td align=right>50.00</td><td align=right>1,000.00</td></tr>
+<tr><td>Travel Stipend</td><td align=right>0.00</td><td align=right>100.00</td></tr>
+<tr><td>Check Amount</td><td align=right>2,363.10</td><td align=right>51,988.20</td></tr></table>
 </body></html>`;
 
 (async () => {

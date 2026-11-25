@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { datesIn, fromAgent, isContributionCategory, readPaystub, readingLooksGood, segments, totalsByCategory, totalsByGroup, unexplained } from "~/lib/paystub";
+import { datesIn, depositAmount, fromAgent, isContributionCategory, readPaystub, readingLooksGood, segments, totalsByCategory, totalsByGroup, unexplained } from "~/lib/paystub";
 import { toRows } from "~/lib/pdfText";
 
 // Rows of cells as pdfText produces them, modelled on common payroll layouts.
@@ -69,6 +69,7 @@ describe("paystub reader", () => {
       ["Guideline Roth 401(k)", "Roth 401(k)", "$239.58", "$5,000.00"],
       ["Health Savings Account", "HSA", "$300.00", "$6,000.00"],
       ["Guideline 401(k) Loan", "401(k) Loan", "$113.36", "$2,300.00"],
+      ["Zeroing out Health Insurance Offset", "Deduction", "$0.00", "$263.17"],
       ["Employer Contributions"],
       ["Description", "Type", "Current", "Year To Date"],
       ["Employee Medical Insurance", "Medical Insurance", "$236.34", "$4,955.06"],
@@ -76,7 +77,18 @@ describe("paystub reader", () => {
       ["Employee Vision Insurance", "Vision Insurance", "$4.08", "$85.36"],
       ["Guideline Traditional 401(k)", "401(k)", "$191.67", "$4,271.25"],
       ["Summary"],
-      ["Net Pay", "$2,925.35"],
+      ["Description", "Current", "Year To Date"],
+      ["Gross Earnings", "$4,791.67", "$106,779.72"],
+      ["Pre-Tax Deductions/Contributions", "$654.66", "$13,696.52"],
+      ["Taxes", "$858.72", "$19,534.62"],
+      ["Post-Tax Deductions/Contributions", "$352.94", "$8,096.00"],
+      ["Net Pay", "$2,925.35", "$65,452.58"],
+      ["Total Reimbursements", "$263.17", "$7,451.57"],
+      ["Gusto Health Insurance Offset", "$263.17", "$5,789.74"],
+      ["Dev trip", "$0.00", "$100.00"],
+      ["Uber for travel", "$0.00", "$49.93"],
+      ["Work Life Reimbursement", "$0.00", "$1,000.00"],
+      ["Check Amount", "$3,188.52", "$72,904.15"],
     ]);
     expect(r.lines.map((l) => [l.category, l.amount])).toEqual([
       ["federal_tax", 542.23], ["social_security", 256.5], ["medicare", 59.99],
@@ -87,7 +99,18 @@ describe("paystub reader", () => {
     expect(r.employer.map((l) => [l.category, l.amount])).toEqual([
       ["medical", 236.34], ["dental", 22.74], ["vision", 4.08], ["401k", 191.67],
     ]);
+    // Paid after net pay: net + reimbursements is the check amount that hits the bank.
+    expect(r.net).toBe(2925.35);
+    expect(r.check).toBe(3188.52);
+    expect(r.reimbursements).toEqual([{ label: "Gusto Health Insurance Offset", category: "reimbursement", amount: 263.17 }]);
+    expect(depositAmount(r.net!, r.reimbursements)).toBe(3188.52);
     expect(unexplained(r.gross!, r.net!, r.lines)).toBe(0);
+    expect(readingLooksGood(r)).toBe(true);
+  });
+
+  it("counts the gap between net pay and the check amount as a reimbursement", () => {
+    const r = readPaystub([["Gross Pay", "1,000.00"], ["Federal Tax", "100.00"], ["Net Pay", "900.00"], ["Check Amount", "950.00"]]);
+    expect(r.reimbursements).toEqual([{ label: "Reimbursements", category: "reimbursement", amount: 50 }]);
     expect(readingLooksGood(r)).toBe(true);
   });
 
@@ -138,6 +161,17 @@ describe("paystub reader", () => {
     expect(r.gross).toBe(3500);
     expect(r.lines).toEqual([{ label: "X", category: "other_pre_tax", amount: 5 }]);
     expect(r.employer).toEqual([]);
+  });
+
+  it("reads reimbursements and the check amount from an agent reply", () => {
+    const r = fromAgent({ gross: 4791.67, net: 2925.35, check_amount: 3188.52, lines: [], reimbursements: [
+      { label: "Gusto Health Insurance Offset", amount: 263.17 }, { label: "Dev trip", amount: 0 },
+    ] });
+    expect(r.check).toBe(3188.52);
+    expect(r.reimbursements).toEqual([{ label: "Gusto Health Insurance Offset", category: "reimbursement", amount: 263.17 }]);
+    expect(fromAgent({ net: 100, check_amount: 120, lines: [] }).reimbursements).toEqual([
+      { label: "Reimbursements", category: "reimbursement", amount: 20 },
+    ]);
   });
 
   it("reads employer contributions from an agent reply", () => {

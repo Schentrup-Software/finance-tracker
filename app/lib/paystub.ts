@@ -25,6 +25,7 @@ export const CATEGORY_LABELS: Record<PaystubCategory, string> = {
   loan_other: "Other loan",
   other_pre_tax: "Other (pre-tax)",
   other_post_tax: "Other (after tax)",
+  reimbursement: "Reimbursement",
 };
 
 export interface CategoryGroup {
@@ -102,6 +103,10 @@ export interface PaystubReading {
   lines: ReadLine[];
   /** Paid by the employer on top of gross pay (not taken out of it). */
   employer: ReadLine[];
+  /** Paid after net pay (category "reimbursement"); they land in the bank with it. */
+  reimbursements: ReadLine[];
+  /** What was deposited, if the stub says ("Check Amount"): net pay plus reimbursements. */
+  check: number | null;
 }
 
 /**
@@ -137,6 +142,12 @@ const EMPLOYER_LINE = /employer|\ber\b|match|company\s*(paid|contrib)/i;
 
 /** A heading that starts the employer's section ("Employer Contributions", "Employer Paid Benefits"). */
 const EMPLOYER_HEADING = /employer\s*(paid\s*)?(contrib|benefit|paid|match)|company\s*(paid|contrib)|paid\s*by\s*(your\s*)?employer|\ber\s*contrib/i;
+
+/** Starts the reimbursements: a "Reimbursements" heading or the "Total Reimbursements" row. */
+const REIMBURSE_HEADING = /reimburse/i;
+
+/** The check amount: net pay plus reimbursements. */
+const CHECK_AMOUNT = /check\s*amount|amount\s*(of\s*)?(check|deposit(ed)?)|total\s*deposits?/i;
 
 /** A heading that ends it: the next section of the stub. */
 const OTHER_HEADING = /^(statutory\s*|other\s*|pre[\s-]*tax\s*|post[\s-]*tax\s*|after[\s-]*tax\s*|voluntary\s*|employee\s*)?(deductions?|taxes|tax\s*withholdings?|withholdings?|earnings|summary|net\s*pay(\s*distribution)?|pay\s*distribution|direct\s*deposits?|deposits?|time\s*off|pto|leave|accruals?|messages?|memo|notes?)\b/i;
@@ -240,6 +251,7 @@ export function readPaystub(rows: string[][]): PaystubReading {
   const segs = segments(rows);
   const rowsText = rows.map((r) => r.join(" ").replace(/\s+/g, " "));
 
+  const check = firstAmount(segs, CHECK_AMOUNT);
   const gross = firstAmount(segs, /gross\s*(pay|earnings|wages)?|total\s*(earnings|gross)/i, /taxable|ytd only|year/i);
   const net = firstAmount(segs, /net\s*(pay|check|amount|deposit)|take[\s-]*home|\bnet\b/i, /ytd only/i);
 
@@ -258,13 +270,26 @@ export function readPaystub(rows: string[][]): PaystubReading {
 
   const lines: ReadLine[] = [];
   const employer: ReadLine[] = [];
+  const reimbursements: ReadLine[] = [];
   const seen = new Set<string>();
-  // Inside an "Employer Contributions" section, every line is paid by the employer.
+  // Inside an "Employer Contributions" section, every line is paid by the employer;
+  // after "Total Reimbursements", every line is a reimbursement until the check amount.
   let inEmployer = false;
+  let inReimbursements = false;
   for (const s of segs) {
     if (s.amounts.length === 0) {
       if (EMPLOYER_HEADING.test(s.label)) inEmployer = true;
-      else if (OTHER_HEADING.test(s.label)) inEmployer = false;
+      else if (REIMBURSE_HEADING.test(s.label)) [inReimbursements, inEmployer] = [true, false];
+      else if (OTHER_HEADING.test(s.label)) inEmployer = inReimbursements = false;
+      continue;
+    }
+    if (CHECK_AMOUNT.test(s.label)) { inReimbursements = false; continue; }
+    if (REIMBURSE_HEADING.test(s.label) && /total/i.test(s.label)) { [inReimbursements, inEmployer] = [true, false]; continue; }
+    if (inReimbursements || (REIMBURSE_HEADING.test(s.label) && !SKIP.test(s.label))) {
+      // This period's amount comes first; a reimbursement that's 0.00 this period wasn't paid.
+      const amount = Math.abs(s.amounts[0]);
+      const label = s.label.replace(/\s+/g, " ").trim().slice(0, 120);
+      if (amount > 0 && !SKIP.test(label)) reimbursements.push({ label, category: "reimbursement", amount: round2(amount) });
       continue;
     }
     if (SKIP.test(s.label)) continue;
@@ -277,8 +302,10 @@ export function readPaystub(rows: string[][]): PaystubReading {
       if (!category || !EMPLOYER_CATEGORIES.includes(category)) category = "other_pre_tax";
     }
     if (!category) continue;
-    const amount = s.amounts.find((a) => a !== 0);
-    if (amount === undefined) continue;
+    // This period's amount comes first. A line that's 0.00 this period (but has a
+    // year-to-date total) wasn't taken out of this paycheck.
+    const amount = s.amounts[0];
+    if (!amount) continue;
     const label = s.label.replace(/\s+/g, " ").trim().slice(0, 120);
     const key = `${byEmployer ? "er" : "ee"}|${label.toLowerCase()}|${Math.abs(amount)}`;
     if (seen.has(key)) continue;
@@ -286,7 +313,18 @@ export function readPaystub(rows: string[][]): PaystubReading {
     (byEmployer ? employer : lines).push({ label, category, amount: round2(Math.abs(amount)) });
   }
 
-  return { pay_date, period_start, period_end, gross, net, lines, employer };
+  // No itemized reimbursements, but the check is more than the net: the difference
+  // was paid on top of it.
+  if (reimbursements.length === 0 && check !== null && net !== null && check - net >= 0.01) {
+    reimbursements.push({ label: "Reimbursements", category: "reimbursement", amount: round2(check - net) });
+  }
+
+  return { pay_date, period_start, period_end, gross, net, lines, employer, reimbursements, check };
+}
+
+/** What lands in the bank: net pay plus reimbursements. */
+export function depositAmount(net: number, reimbursements: { amount: number }[]): number {
+  return round2(net + reimbursements.reduce((s, l) => s + (l.amount || 0), 0));
 }
 
 /** gross − deductions − net. Zero when everything on the stub is accounted for. */
@@ -297,6 +335,7 @@ export function unexplained(gross: number, net: number, lines: { amount: number 
 /** True when a reading is complete enough to trust as a starting point. */
 export function readingLooksGood(r: PaystubReading): boolean {
   if (!r.gross || !r.net || r.lines.length === 0) return false;
+  if (r.check !== null && Math.abs(depositAmount(r.net, r.reimbursements) - r.check) > 0.01) return false;
   return Math.abs(unexplained(r.gross, r.net, r.lines)) <= 1;
 }
 
@@ -322,9 +361,9 @@ export function fromAgent(json: any): PaystubReading {
         amount: num(l?.amount) ?? 0,
       }))
       .filter((l: ReadLine) => l.amount > 0);
-  return {
+  const reading: PaystubReading = {
     pay_date: date(json?.pay_date), period_start: date(json?.period_start), period_end: date(json?.period_end),
-    gross: num(json?.gross), net: num(json?.net),
+    gross: num(json?.gross), net: num(json?.net), check: num(json?.check_amount),
     lines: readLines(json?.lines, () => true),
     // Employer-paid taxes aren't benefits, so they are dropped.
     employer: readLines(
@@ -332,5 +371,11 @@ export function fromAgent(json: any): PaystubReading {
         .filter((l: any) => !(l?.category in CATEGORY_LABELS && groupOf(l.category).key === "taxes")),
       (c) => EMPLOYER_CATEGORIES.includes(c),
     ),
+    reimbursements: readLines(json?.reimbursements, () => false).map((l) => ({ ...l, category: "reimbursement" as const })),
   };
+  const { check, net } = reading;
+  if (reading.reimbursements.length === 0 && check !== null && net !== null && check - net >= 0.01) {
+    reading.reimbursements.push({ label: "Reimbursements", category: "reimbursement", amount: round2(check - net) });
+  }
+  return reading;
 }
