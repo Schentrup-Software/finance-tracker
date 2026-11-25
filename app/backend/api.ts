@@ -451,6 +451,7 @@ export async function latestPaystub(earnerId: string): Promise<{ paystub: Paystu
 
 export type LineDraft = {
   id?: string; category: PaystubLine["category"]; label: string; amount: number; debt: string; asset: string;
+  employer_paid?: boolean;
 };
 
 /**
@@ -475,7 +476,8 @@ export async function savePaystub(
   const keep = new Set(lines.filter((l) => l.id).map((l) => l.id));
   await Promise.all(before.filter((l) => !keep.has(l.id)).map((l) => remove("paystub_lines", l.id)));
   await Promise.all(lines.map((l, i) => {
-    const d = { paystub: paystub.id, category: l.category, label: l.label, amount: l.amount, debt: l.debt, asset: l.asset, sort: i };
+    const d = { paystub: paystub.id, category: l.category, label: l.label, amount: l.amount, debt: l.employer_paid ? "" : l.debt, asset: l.asset,
+      employer_paid: !!l.employer_paid, sort: i };
     return l.id ? update<PaystubLine>("paystub_lines", l.id, d) : create<PaystubLine>("paystub_lines", d);
   }));
   return paystub;

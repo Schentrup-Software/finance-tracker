@@ -68,6 +68,15 @@ export const CONTRIBUTION_ASSET_TYPES: Partial<Record<PaystubCategory, string[]>
   retirement_other: ["401k", "ira", "roth_ira"],
 };
 
+/**
+ * What an employer pays on top of the paycheck (health insurance premiums, a
+ * 401(k) match, an HSA seed). It isn't taken out of gross pay, so it's kept
+ * apart from the deductions; these are the categories it can be.
+ */
+export const EMPLOYER_CATEGORIES: PaystubCategory[] = [
+  "medical", "dental", "vision", "life", "disability", "hsa", "fsa", "401k", "roth_401k", "retirement_other", "other_pre_tax",
+];
+
 /** Totals per category, largest first. */
 export function totalsByCategory(lines: { category: PaystubCategory; amount: number }[]) {
   const m = new Map<PaystubCategory, number>();
@@ -89,7 +98,10 @@ export interface PaystubReading {
   period_end: string | null;
   gross: number | null;
   net: number | null;
+  /** Taken out of gross pay. */
   lines: ReadLine[];
+  /** Paid by the employer on top of gross pay (not taken out of it). */
+  employer: ReadLine[];
 }
 
 /**
@@ -117,8 +129,17 @@ const RULES: [RegExp, PaystubCategory][] = [
   [/403\s*\(?b\)?|\b457\b|pension|retire|\btsp\b/i, "retirement_other"],
 ];
 
-/** Lines that look like deductions but aren't money out of this paycheck. */
-const SKIP = /employer|\ber\b|match|\bnet\b|\bgross\b|total|taxable|earnings|\bwages?\b|\bhours?\b|\brate\b|\bbalance\b|year\s*to\s*date|\bytd\b\s*$/i;
+/** Lines that look like deductions but aren't money in or out of this paycheck. */
+const SKIP = /\bnet\b|\bgross\b|total|taxable|earnings|\bwages?\b|\bhours?\b|\brate\b|\bbalance\b|year\s*to\s*date|\bytd\b\s*$/i;
+
+/** A line paid by the employer ("Employer 401K Match", "ER HSA"), wherever it sits. */
+const EMPLOYER_LINE = /employer|\ber\b|match|company\s*(paid|contrib)/i;
+
+/** A heading that starts the employer's section ("Employer Contributions", "Employer Paid Benefits"). */
+const EMPLOYER_HEADING = /employer\s*(paid\s*)?(contrib|benefit|paid|match)|company\s*(paid|contrib)|paid\s*by\s*(your\s*)?employer|\ber\s*contrib/i;
+
+/** A heading that ends it: the next section of the stub. */
+const OTHER_HEADING = /^(statutory\s*|other\s*|pre[\s-]*tax\s*|post[\s-]*tax\s*|after[\s-]*tax\s*|voluntary\s*|employee\s*)?(deductions?|taxes|tax\s*withholdings?|withholdings?|earnings|summary|net\s*pay(\s*distribution)?|pay\s*distribution|direct\s*deposits?|deposits?|time\s*off|pto|leave|accruals?|messages?|memo|notes?)\b/i;
 
 const MONEY = /\(?-?\$?\s?\d{1,3}(?:,\d{3})*\.\d{2}\)?|\(?-?\$?\s?\d+\.\d{2}\)?/g;
 
@@ -236,21 +257,36 @@ export function readPaystub(rows: string[][]): PaystubReading {
   if (!pay_date) pay_date = period_end;
 
   const lines: ReadLine[] = [];
+  const employer: ReadLine[] = [];
   const seen = new Set<string>();
+  // Inside an "Employer Contributions" section, every line is paid by the employer.
+  let inEmployer = false;
   for (const s of segs) {
+    if (s.amounts.length === 0) {
+      if (EMPLOYER_HEADING.test(s.label)) inEmployer = true;
+      else if (OTHER_HEADING.test(s.label)) inEmployer = false;
+      continue;
+    }
     if (SKIP.test(s.label)) continue;
+    const byEmployer = inEmployer || EMPLOYER_LINE.test(s.label);
     const rule = RULES.find(([re]) => re.test(s.label));
-    if (!rule) continue;
+    let category = rule?.[1];
+    if (byEmployer) {
+      // Employer-paid taxes (their half of Social Security and Medicare) aren't benefits.
+      if (category && groupOf(category).key === "taxes") continue;
+      if (!category || !EMPLOYER_CATEGORIES.includes(category)) category = "other_pre_tax";
+    }
+    if (!category) continue;
     const amount = s.amounts.find((a) => a !== 0);
     if (amount === undefined) continue;
     const label = s.label.replace(/\s+/g, " ").trim().slice(0, 120);
-    const key = `${label.toLowerCase()}|${Math.abs(amount)}`;
+    const key = `${byEmployer ? "er" : "ee"}|${label.toLowerCase()}|${Math.abs(amount)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    lines.push({ label, category: rule[1], amount: round2(Math.abs(amount)) });
+    (byEmployer ? employer : lines).push({ label, category, amount: round2(Math.abs(amount)) });
   }
 
-  return { pay_date, period_start, period_end, gross, net, lines };
+  return { pay_date, period_start, period_end, gross, net, lines, employer };
 }
 
 /** gross − deductions − net. Zero when everything on the stub is accounted for. */
@@ -278,15 +314,23 @@ export function totalsByGroup(lines: { category: PaystubCategory; amount: number
 export function fromAgent(json: any): PaystubReading {
   const num = (v: any) => (v === null || v === undefined || v === "" || isNaN(Number(v)) ? null : Math.abs(Number(v)));
   const date = (v: any) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null);
-  const lines: ReadLine[] = (Array.isArray(json?.lines) ? json.lines : [])
-    .map((l: any) => ({
-      label: String(l?.label ?? "").slice(0, 120),
-      category: (l?.category in CATEGORY_LABELS ? l.category : "other_pre_tax") as PaystubCategory,
-      amount: num(l?.amount) ?? 0,
-    }))
-    .filter((l: ReadLine) => l.amount > 0);
+  const readLines = (list: any, allowed: (c: PaystubCategory) => boolean): ReadLine[] =>
+    (Array.isArray(list) ? list : [])
+      .map((l: any) => ({
+        label: String(l?.label ?? "").slice(0, 120),
+        category: (l?.category in CATEGORY_LABELS && allowed(l.category) ? l.category : "other_pre_tax") as PaystubCategory,
+        amount: num(l?.amount) ?? 0,
+      }))
+      .filter((l: ReadLine) => l.amount > 0);
   return {
     pay_date: date(json?.pay_date), period_start: date(json?.period_start), period_end: date(json?.period_end),
-    gross: num(json?.gross), net: num(json?.net), lines,
+    gross: num(json?.gross), net: num(json?.net),
+    lines: readLines(json?.lines, () => true),
+    // Employer-paid taxes aren't benefits, so they are dropped.
+    employer: readLines(
+      (Array.isArray(json?.employer) ? json.employer : json?.employer_contributions ?? [])
+        .filter((l: any) => !(l?.category in CATEGORY_LABELS && groupOf(l.category).key === "taxes")),
+      (c) => EMPLOYER_CATEGORIES.includes(c),
+    ),
   };
 }

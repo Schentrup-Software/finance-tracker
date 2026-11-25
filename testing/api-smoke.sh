@@ -101,6 +101,17 @@ OS=$(j -H "$OTHER" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\"
 check "another user can't feed my HSA" "$(j -H "$OTHER" -X POST "$B/api/collections/paystub_lines/records" -d "{\"paystub\":\"$OS\",\"category\":\"hsa\",\"amount\":1,\"asset\":\"$HSA\"}" | field '["status"]')" "400"
 check "my HSA is untouched" "$(value_of "$HSA")" "1000"
 
+# Employer contributions: kept apart from deductions, can feed an asset, copied on repeat paychecks
+K401=$(j -H "$A" -X POST "$B/api/collections/assets/records" -d '{"name":"401k","type":"401k","value":2000}' | field '["id"]')
+E3=$(j -H "$A" -X POST "$B/api/collections/earners/records" -d '{"name":"Pat"}' | field '["id"]')
+S3=$(j -H "$A" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\":\"$E3\",\"pay_date\":\"2026-11-13 12:00:00.000Z\",\"gross\":4791.67,\"net\":2925.35,\"source\":\"upload\"}" | field '["id"]')
+j -H "$A" -X POST "$B/api/collections/paystub_lines/records" -d "{\"paystub\":\"$S3\",\"category\":\"roth_401k\",\"amount\":239.58,\"asset\":\"$K401\"}" > /dev/null
+check "an employer 401(k) line saves as employer-paid" "$(j -H "$A" -X POST "$B/api/collections/paystub_lines/records" -d "{\"paystub\":\"$S3\",\"category\":\"401k\",\"amount\":191.67,\"asset\":\"$K401\",\"employer_paid\":true}" | field '["employer_paid"]')" "True"
+check "employee and employer contributions both raise the 401(k)" "$(value_of "$K401")" "2431.25"
+D5=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E3\",\"amount\":2925.35,\"date\":\"2026-11-27 12:00:00.000Z\"}" | field '["id"]')
+COPY=$(j -H "$A" "$B/api/collections/paystubs/records?filter=transaction='$D5'" | field '["items"][0]["id"]')
+check "a repeat paycheck copies the employer line" "$(j -H "$A" "$B/api/collections/paystub_lines/records?filter=paystub='$COPY'%26%26employer_paid=true" | field '["totalItems"]')" "1"
+
 # Annual envelopes, imported months and opening balances
 carried_of() { j -H "$A" "$B/api/finance/balances?month=$1" | field "[\"carried\"][\"$2\"]"; }
 XMAS=$(j -H "$A" -X POST "$B/api/sync/envelopes" -d '{"records":[{"external_id":"imp-xmas","name":"Christmas","period":"annual","goal":3600,"rollover":true,"opening_balance":500,"opening_date":"2026-11-10 23:59:59.999Z"}]}' | field '["records"][0]["id"]')

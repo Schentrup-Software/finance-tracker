@@ -191,6 +191,14 @@ grows with every paycheck. Editing or deleting the line, its paystub or a deposi
 paystub takes the amount back out. If n8n also syncs that account's balance from the bank,
 leave `asset` empty on those lines so the money isn't counted twice.
 
+Employer contributions (insurance the employer pays for, a 401(k) match or contribution,
+an HSA contribution) are `paystub_lines` with `employer_paid: true`. They are paid on top
+of gross pay, not taken out of it, so they are left out of "gross minus deductions equals
+net". Their category says what they are (an employer 401(k) contribution is `401k`, the
+traditional kind, even when it goes into the account that holds Roth contributions), and a
+retirement or HSA one with an `asset` set raises that asset's value like any other
+contribution line. Copied paystubs (`source: "repeat"`) copy them too.
+
 To have n8n remind you, poll for deposits waiting on a paystub:
 
 ```http
@@ -539,6 +547,7 @@ One per household per `year`. Percentages are in percent (`7.5`).
 | `amount` | number ≥ 0 | |
 | `debt` | relation → debts | For loan lines: the debt it pays down |
 | `asset` | relation → assets | For HSA and retirement lines: the account it goes into |
+| `employer_paid` | bool | Paid by the employer on top of gross pay, not a deduction |
 | `sort` | number | |
 
 ## 5. Errors

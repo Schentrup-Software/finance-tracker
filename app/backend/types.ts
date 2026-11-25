@@ -239,5 +239,7 @@ export interface PaystubLine extends BaseRecord {
   debt: string;
   /** For contributions (HSA, 401(k)): the account it goes into. */
   asset: string;
+  /** Paid by the employer on top of gross pay (not taken out of it). */
+  employer_paid: boolean;
   sort: number;
 }

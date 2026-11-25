@@ -250,6 +250,7 @@ function repeatPaystub(app, template, tx) {
     l.set("amount", line.getFloat("amount"));
     l.set("debt", line.get("debt"));
     l.set("asset", line.get("asset"));
+    l.set("employer_paid", line.getBool("employer_paid"));
     l.set("sort", line.getFloat("sort"));
     app.save(l);
   }
@@ -391,10 +392,15 @@ function syncLinePayment(app, line) {
 
 const PAYSTUB_PROMPT = [
   "Read this paystub and reply with ONLY a JSON object, no other text, in this shape:",
-  '{"pay_date":"YYYY-MM-DD","period_start":"YYYY-MM-DD","period_end":"YYYY-MM-DD","employer":"","gross":0,"net":0,',
-  '"lines":[{"label":"as printed","category":"one of the categories","amount":0}]}',
+  '{"pay_date":"YYYY-MM-DD","period_start":"YYYY-MM-DD","period_end":"YYYY-MM-DD","employer_name":"","gross":0,"net":0,',
+  '"lines":[{"label":"as printed","category":"one of the categories","amount":0}],',
+  '"employer":[{"label":"as printed","category":"one of the categories","amount":0}]}',
   "Use this pay period's amounts, not year-to-date. Amounts are positive numbers in dollars.",
-  "lines are every deduction and tax taken from gross pay. Do not include earnings lines, employer contributions, or net pay.",
+  "lines are every deduction and tax taken from gross pay. Do not include earnings lines or net pay in lines.",
+  "employer is what the employer paid on top of gross pay (employer contributions such as employer-paid medical, dental or vision insurance, a 401(k)",
+  "match or contribution, or an HSA contribution). Use [] if there are none. Employer contributions never go in lines,",
+  "and employer-paid taxes go in neither list. An employer 401(k) contribution is category 401k (traditional),",
+  "even when the employee's own contributions are Roth.",
   "Categories: federal_tax, state_tax, local_tax, social_security, medicare, medical, dental, vision, hsa, fsa, life,",
   "disability, 401k, roth_401k, retirement_other, 401k_loan, loan_other, other_pre_tax, other_post_tax.",
   "Use null for anything you can't find.",

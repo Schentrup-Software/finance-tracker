@@ -287,10 +287,10 @@ export const PRE_TAX: PaystubCategory[] = ["401k", "hsa", "fsa", "medical", "den
  * paystubs. AGI also includes interest and other income, and is lowered by IRA
  * deductions, so the real number gets typed in once the return is drafted.
  */
-export function agiEstimate(paystubs: Pick<Paystub, "id" | "gross">[], lines: Pick<PaystubLine, "paystub" | "category" | "amount">[]): number {
+export function agiEstimate(paystubs: Pick<Paystub, "id" | "gross">[], lines: (Pick<PaystubLine, "paystub" | "category" | "amount"> & { employer_paid?: boolean })[]): number {
   const ids = new Set(paystubs.map((p) => p.id));
   const gross = paystubs.reduce((s, p) => s + p.gross, 0);
-  const pre = lines.filter((l) => ids.has(l.paystub) && PRE_TAX.includes(l.category)).reduce((s, l) => s + l.amount, 0);
+  const pre = lines.filter((l) => !l.employer_paid && ids.has(l.paystub) && PRE_TAX.includes(l.category)).reduce((s, l) => s + l.amount, 0);
   return round2(Math.max(0, gross - pre));
 }
 
