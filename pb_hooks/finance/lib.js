@@ -173,12 +173,14 @@ function adjustDebtBalance(app, debtId, delta) {
 
 // ---------- Paychecks ----------
 
-// A deposit "matches" the earner's last paystub when the take-home pay is
-// within one cent of it. Then taxes and deductions are assumed unchanged.
-const MATCH_TOLERANCE = 0.01;
+// A deposit "matches" the earner's last paystub when it is within one cent of
+// the paystub's check amount, above or below (paychecks drift by a cent from
+// rounding). Then taxes and deductions are assumed unchanged. Compared in whole
+// cents so floating point can't push a one-cent difference over the line.
+const MATCH_TOLERANCE_CENTS = 1;
 
 function sameMoney(a, b) {
-  return Math.abs(a - b) <= MATCH_TOLERANCE + 1e-9;
+  return Math.abs(Math.round(a * 100) - Math.round(b * 100)) <= MATCH_TOLERANCE_CENTS;
 }
 
 /** The earner's most recent paystub on or before `date`, ignoring any tied to `excludeTx`. */
@@ -338,11 +340,12 @@ function attachPaystub(app, paystub) {
 }
 
 /**
- * Fills in earlier paychecks from a paystub: every deposit from the same earner,
- * paid before this paystub's pay date, still waiting for a paystub and within a
- * cent of this one's check amount gets a copy of it, the same way a later
- * matching deposit does. Run after the paystub's lines are saved. Returns how
- * many deposits were filled in.
+ * Fills in paychecks from a paystub: every deposit from the same earner that is
+ * still waiting for a paystub and within a cent (either way) of this one's check
+ * amount gets a copy of it. That covers deposits before the pay date and ones
+ * after it that landed before the paystub was saved, unless another uploaded or
+ * typed-in paystub sits between them. Run after the paystub's lines are saved.
+ * Returns how many deposits were filled in.
  */
 function backfillPaystub(app, ownerId, paystubId) {
   let paystub;
@@ -351,21 +354,36 @@ function backfillPaystub(app, ownerId, paystubId) {
   if (paystub.get("source") === "repeat") return 0;
   const waiting = app.findRecordsByFilter(
     "transactions",
-    "owner = {:owner} && earner = {:earner} && kind = 'income' && paystub_status = 'needs_paystub' && date < {:before} && id != {:self}",
+    "owner = {:owner} && earner = {:earner} && kind = 'income' && paystub_status = 'needs_paystub' && id != {:self}",
     "date",
     0,
     0,
-    { owner: ownerId, earner: paystub.get("earner"), before: paystub.getString("pay_date"), self: paystub.get("transaction") || "" },
+    { owner: ownerId, earner: paystub.get("earner"), self: paystub.get("transaction") || "" },
   );
+  const payDate = paystub.getString("pay_date");
   let filled = 0;
   for (const tx of waiting) {
     if (!sameMoney(tx.getFloat("amount"), depositOf(paystub))) continue;
     if (paystubsForTransaction(app, tx.id).length > 0) continue;
-    repeatPaystub(app, paystub, tx, true);
+    const date = tx.getString("date");
+    if (date > payDate && newerRealPaystub(app, paystub, date)) continue;
+    repeatPaystub(app, paystub, tx, date < payDate);
     setPaystubStatus(app, tx, "matched");
     filled++;
   }
   return filled;
+}
+
+/** True when the earner has an uploaded or typed-in paystub after `paystub` and on or before `date`. */
+function newerRealPaystub(app, paystub, date) {
+  return app.findRecordsByFilter(
+    "paystubs",
+    "owner = {:owner} && earner = {:earner} && source != 'repeat' && id != {:id} && pay_date > {:from} && pay_date <= {:to}",
+    "",
+    1,
+    0,
+    { owner: paystub.get("owner"), earner: paystub.get("earner"), id: paystub.id, from: paystub.getString("pay_date"), to: date },
+  ).length > 0;
 }
 
 /** When a paystub linked to a deposit goes away, the deposit needs one again. */
