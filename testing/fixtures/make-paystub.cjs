@@ -26,7 +26,11 @@ const html = `<!doctype html><html><body style="font-family:Arial;font-size:12px
 <tr><td>401K</td><td align=right>-175.00</td><td align=right>3,850.00</td></tr>
 <tr><td>401K Loan 1</td><td align=right>-121.14</td><td align=right>2,665.08</td></tr></table>
 <h3><span>Net Pay</span> <span style="margin-left:200px">$2,313.10</span></h3>
-<p>Employer 401K Match 105.00 2,310.00</p>
+<h3>Employer Contributions</h3>
+<table style="width:100%"><tr><th align=left>Description</th><th>this period</th><th>year to date</th></tr>
+<tr><td>Employee Medical Insurance</td><td align=right>236.34</td><td align=right>4,955.06</td></tr>
+<tr><td>Traditional 401(k)</td><td align=right>105.00</td><td align=right>2,310.00</td></tr></table>
+<h3>Summary</h3>
 </body></html>`;
 
 (async () => {

@@ -142,6 +142,8 @@ describe("helpers", () => {
     const lines = [
       { paystub: "a", category: "401k" as const, amount: 300 }, { paystub: "a", category: "federal_tax" as const, amount: 400 },
       { paystub: "b", category: "medical" as const, amount: 100 }, { paystub: "x", category: "401k" as const, amount: 999 },
+      // An employer contribution isn't part of gross pay, so it doesn't lower AGI.
+      { paystub: "a", category: "401k" as const, amount: 191.67, employer_paid: true },
     ];
     expect(agiEstimate(stubs, lines)).toBe(6600);
   });

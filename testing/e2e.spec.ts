@@ -164,12 +164,18 @@ test("paychecks: read a PDF paystub, then match the next paycheck to the cent", 
   await expect(d.getByLabel("Gross pay")).toHaveValue("3500");
   await expect(d.getByText("✓ Gross minus everything above equals the take-home.")).toBeVisible();
   await expect(d.getByLabel("Pays down")).toHaveValue(/.+/); // linked to the only 401(k) loan
+  // Employer contributions are read into their own section, outside the take-home check.
+  await expect(d.getByText("Paid by your employer")).toBeVisible();
+  await expect(d.getByText("+$341.34")).toBeVisible();
+  await d.getByRole("button", { name: "Add an employer contribution" }).scrollIntoViewIfNeeded();
+  if (process.env.SCREENSHOTS) await d.screenshot({ path: `${process.env.SCREENSHOTS}/05b-employer-contributions.png` });
   await shot(page, "05-paystub-review");
   await d.getByRole("button", { name: "Save paystub" }).click();
   await expect(page.getByText(/is different/)).toHaveCount(0);
   await expect(page.getByText("Before it hits the bank")).toBeVisible();
   await expect(page.getByText("−$723.93")).toBeVisible(); // taxes
   await expect(page.getByText("−$166.83")).toBeVisible(); // medical + dental + vision
+  await expect(page.getByText("+$341.34")).toBeVisible(); // paid by the employer
 
   // Next paycheck is a cent off: same taxes and deductions are assumed.
   await page.getByRole("button", { name: "Income", exact: true }).click();

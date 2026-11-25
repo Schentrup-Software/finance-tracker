@@ -15,8 +15,8 @@ import {
 import { monthLabel, shortDate, todayISO } from "~/lib/dates";
 import { money, parseMoney, round2 } from "~/lib/money";
 import {
-  CATEGORY_GROUPS, CATEGORY_LABELS, CONTRIBUTION_ASSET_TYPES, fromAgent, isContributionCategory, isLoanCategory,
-  readPaystub, readingLooksGood, totalsByCategory, totalsByGroup,
+  CATEGORY_GROUPS, CATEGORY_LABELS, CONTRIBUTION_ASSET_TYPES, EMPLOYER_CATEGORIES, fromAgent, groupOf,
+  isContributionCategory, isLoanCategory, readPaystub, readingLooksGood, totalsByCategory, totalsByGroup,
   unexplained, type PaystubReading,
 } from "~/lib/paystub";
 
@@ -138,7 +138,7 @@ function BeforeTheBank({ data, earnerById, month, onOpen, onEditEarner }: {
   const shown = range === "month" ? { paystubs: data.paystubs, lines: data.lines } : data.year;
   const linesByStub = useMemo(() => {
     const m = new Map<string, number>();
-    for (const l of data.lines) m.set(l.paystub, round2((m.get(l.paystub) ?? 0) + l.amount));
+    for (const l of data.lines) if (!l.employer_paid) m.set(l.paystub, round2((m.get(l.paystub) ?? 0) + l.amount));
     return m;
   }, [data.lines]);
 
@@ -204,13 +204,16 @@ function Breakdown({ paystubs, lines, earnerById, empty, detailed }: {
 }) {
   const gross = round2(paystubs.reduce((s, p) => s + p.gross, 0));
   const net = round2(paystubs.reduce((s, p) => s + p.net, 0));
+  const employerLines = lines.filter((l) => l.employer_paid);
+  lines = lines.filter((l) => !l.employer_paid);
   const groups = totalsByGroup(lines).filter((g) => g.total > 0);
+  const employerTotal = round2(employerLines.reduce((s, l) => s + l.amount, 0));
 
   // Per earner, for households with more than one paycheck.
   const earnerOfStub = new Map(paystubs.map((p) => [p.id, p.earner]));
   const earnerIds = [...new Set(paystubs.map((p) => p.earner))];
-  const perEarner = (category: PaystubCategory) => earnerIds.map((id) =>
-    round2(lines.filter((l) => l.category === category && earnerOfStub.get(l.paystub) === id).reduce((s, l) => s + l.amount, 0)));
+  const perEarner = (category: PaystubCategory, from = lines) => earnerIds.map((id) =>
+    round2(from.filter((l) => l.category === category && earnerOfStub.get(l.paystub) === id).reduce((s, l) => s + l.amount, 0)));
 
   if (gross <= 0) return <p className="font-semibold opacity-75">{empty}</p>;
   return (
@@ -263,6 +266,34 @@ function Breakdown({ paystubs, lines, earnerById, empty, detailed }: {
           </li>
         ))}
       </ul>
+      {employerTotal > 0 && (
+        <div className="c-sky mt-5 rounded-2xl px-4 py-3" style={{ background: "var(--c)" }}>
+          <div className="flex items-center gap-3 font-bold">
+            <span className="text-xl" aria-hidden="true">🎁</span>
+            <span className="flex-1">
+              Paid by the employer
+              <span className="block text-xs font-semibold opacity-70">On top of gross pay, not taken out of it</span>
+            </span>
+            <span className="num font-black">+{money(employerTotal, { cents: true })}</span>
+          </div>
+          {detailed && (
+            <ul className="ml-9 mt-1 space-y-0.5 text-sm font-semibold">
+              {totalsByCategory(employerLines).map((c) => (
+                <li key={c.category} className="flex gap-3">
+                  <span className="flex-1 opacity-80">{CATEGORY_LABELS[c.category]}</span>
+                  {earnerIds.length > 1 && perEarner(c.category, employerLines).map((v, i) => (
+                    <span key={earnerIds[i]} className="num w-24 text-right text-xs opacity-60"
+                      title={earnerById.get(earnerIds[i])?.name}>
+                      {earnerById.get(earnerIds[i])?.name}: {money(v)}
+                    </span>
+                  ))}
+                  <span className="num w-24 text-right font-black">{money(c.total, { cents: true })}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </>
   );
 }
@@ -360,7 +391,7 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
 
   useEffect(() => { agentReaderAvailable().then(setAgent); }, []);
   useEffect(() => {
-    if (existing) listPaystubLines(existing.id).then((ls) => setLines(ls.map((l) => ({ id: l.id, category: l.category, label: l.label, amount: l.amount, debt: l.debt, asset: l.asset }))));
+    if (existing) listPaystubLines(existing.id).then((ls) => setLines(ls.map((l) => ({ id: l.id, category: l.category, label: l.label, amount: l.amount, debt: l.debt, asset: l.asset, employer_paid: l.employer_paid }))));
   }, [existing]);
 
   const loanDebts = debts.filter((d) => d.type === "401k_loan" || d.balance > 0);
@@ -371,25 +402,40 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
    */
   function withDebts(ls: LineDraft[], previous: LineDraft[]): LineDraft[] {
     const k401 = debts.filter((d) => d.type === "401k_loan" && d.balance > 0);
-    const samePrev = (l: LineDraft, key: "debt" | "asset") =>
-      previous.find((p) => p[key] && p.category === l.category && p.label === l.label) ??
-      previous.find((p) => p[key] && p.category === l.category);
-    return ls.map((l) => {
-      if (isLoanCategory(l.category) && !l.debt) {
+    const samePrev = (l: LineDraft, key: "debt" | "asset") => {
+      const same = previous.filter((p) => p[key] && p.category === l.category && !!p.employer_paid === !!l.employer_paid);
+      return same.find((p) => p.label === l.label) ?? same[0];
+    };
+    const linked = ls.map((l) => {
+      if (isLoanCategory(l.category) && !l.debt && !l.employer_paid) {
         return { ...l, debt: samePrev(l, "debt")?.debt ?? (l.category === "401k_loan" && k401.length === 1 ? k401[0].id : "") };
       }
       if (isContributionCategory(l.category) && !l.asset) {
         const types = CONTRIBUTION_ASSET_TYPES[l.category] ?? [];
         const fits = assets.filter((a) => types.includes(a.type));
-        return { ...l, asset: samePrev(l, "asset")?.asset ?? (fits.length === 1 ? fits[0].id : "") };
+        const prev = samePrev(l, "asset")?.asset;
+        return { ...l, asset: prev ?? (fits.length === 1 && !l.employer_paid ? fits[0].id : "") };
       }
       return l;
+    });
+    // An employer 401(k) or HSA contribution usually lands in the same account as
+    // the employee's own (a traditional match can go into the account that holds
+    // Roth contributions), so it follows the employee line's account.
+    return linked.map((l) => {
+      if (!l.employer_paid || l.asset || !isContributionCategory(l.category)) return l;
+      const group = groupOf(l.category).key;
+      const own = linked.find((o) => !o.employer_paid && o.asset && groupOf(o.category).key === group);
+      const types = CONTRIBUTION_ASSET_TYPES[l.category] ?? [];
+      const fits = assets.filter((a) => types.includes(a.type));
+      return { ...l, asset: own?.asset ?? (fits.length === 1 ? fits[0].id : "") };
     });
   }
 
   async function previousLines(): Promise<LineDraft[]> {
     const last = earner ? await latestPaystub(earner) : null;
-    return (last?.lines ?? []).map((l) => ({ category: l.category, label: l.label, amount: l.amount, debt: l.debt, asset: l.asset }));
+    return (last?.lines ?? []).map((l) => ({
+      category: l.category, label: l.label, amount: l.amount, debt: l.debt, asset: l.asset, employer_paid: l.employer_paid,
+    }));
   }
 
   function apply(r: PaystubReading, previous: LineDraft[]) {
@@ -398,7 +444,10 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
     if (r.period_end) setPeriodEnd(r.period_end);
     if (r.gross !== null) setGross(String(r.gross));
     if (r.net !== null) setNet(String(r.net));
-    setLines(withDebts(r.lines.map((l) => ({ ...l, debt: "", asset: "" })), previous));
+    setLines(withDebts([
+      ...r.lines.map((l) => ({ ...l, debt: "", asset: "" })),
+      ...r.employer.map((l) => ({ ...l, debt: "", asset: "", employer_paid: true })),
+    ], previous));
   }
 
   async function readWithAgent(f: File): Promise<PaystubReading> {
@@ -485,8 +534,50 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
     }
   }
 
-  const gap = unexplained(parseMoney(gross), parseMoney(net), lines);
+  const gap = unexplained(parseMoney(gross), parseMoney(net), lines.filter((l) => !l.employer_paid));
   const setLine = (i: number, patch: Partial<LineDraft>) => setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
+  const indexed = lines.map((l, i) => ({ l, i }));
+  const employerTotal = round2(lines.filter((l) => l.employer_paid).reduce((s, l) => s + (l.amount || 0), 0));
+
+  const lineRow = ({ l, i }: { l: LineDraft; i: number }) => (
+    <li key={i} className="rounded-2xl bg-white/70 p-3">
+      <div className="grid grid-cols-[1fr_120px_auto] items-center gap-2">
+        <select aria-label="Category" className="input !py-2 text-sm" value={l.category}
+          onChange={(e) => setLine(i, { category: e.target.value as PaystubCategory })}>
+          {CATEGORY_GROUPS.map((g) => {
+            const cats = l.employer_paid ? g.categories.filter((c) => EMPLOYER_CATEGORIES.includes(c)) : g.categories;
+            return cats.length > 0 && (
+              <optgroup key={g.key} label={g.label}>
+                {cats.map((c) => <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>)}
+              </optgroup>
+            );
+          })}
+        </select>
+        <input aria-label="Amount" className="input num !py-2 text-right text-sm" inputMode="decimal" type="number" step="0.01" min="0"
+          value={l.amount || ""} onChange={(e) => setLine(i, { amount: parseMoney(e.target.value) })} />
+        <button type="button" aria-label="Remove line" className="opacity-50 hover:opacity-100"
+          onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))}><Icon name="trash" className="h-4 w-4" /></button>
+      </div>
+      <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <input aria-label="Label on paystub" className="input !py-2 text-sm" placeholder="As printed on the paystub"
+          value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} />
+        {isContributionCategory(l.category) && (
+          <select aria-label="Goes into" className="input !py-2 text-sm" value={l.asset}
+            onChange={(e) => setLine(i, { asset: e.target.value })}>
+            <option value="">Goes into… (pick the account)</option>
+            {assets.map((a) => <option key={a.id} value={a.id}>{a.name} ({money(a.value)})</option>)}
+          </select>
+        )}
+        {isLoanCategory(l.category) && !l.employer_paid && (
+          <select aria-label="Pays down" className="input !py-2 text-sm" value={l.debt}
+            onChange={(e) => setLine(i, { debt: e.target.value })}>
+            <option value="">Pays down… (pick the loan)</option>
+            {loanDebts.map((d) => <option key={d.id} value={d.id}>{d.name} ({money(d.balance)})</option>)}
+          </select>
+        )}
+      </div>
+    </li>
+  );
 
   return (
     <Modal open title={existing ? "Paystub" : "Add a paystub"} onClose={onClose} color="sky">
@@ -544,42 +635,7 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
           <div>
             <div className="field-label">Taken out of this paycheck</div>
             <ul className="space-y-2">
-              {lines.map((l, i) => (
-                <li key={i} className="rounded-2xl bg-white/70 p-3">
-                  <div className="grid grid-cols-[1fr_120px_auto] items-center gap-2">
-                    <select aria-label="Category" className="input !py-2 text-sm" value={l.category}
-                      onChange={(e) => setLine(i, { category: e.target.value as PaystubCategory })}>
-                      {CATEGORY_GROUPS.map((g) => (
-                        <optgroup key={g.key} label={g.label}>
-                          {g.categories.map((c) => <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>)}
-                        </optgroup>
-                      ))}
-                    </select>
-                    <input aria-label="Amount" className="input num !py-2 text-right text-sm" inputMode="decimal" type="number" step="0.01" min="0"
-                      value={l.amount || ""} onChange={(e) => setLine(i, { amount: parseMoney(e.target.value) })} />
-                    <button type="button" aria-label="Remove line" className="opacity-50 hover:opacity-100"
-                      onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))}><Icon name="trash" className="h-4 w-4" /></button>
-                  </div>
-                  <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    <input aria-label="Label on paystub" className="input !py-2 text-sm" placeholder="As printed on the paystub"
-                      value={l.label} onChange={(e) => setLine(i, { label: e.target.value })} />
-                    {isContributionCategory(l.category) && (
-                      <select aria-label="Goes into" className="input !py-2 text-sm" value={l.asset}
-                        onChange={(e) => setLine(i, { asset: e.target.value })}>
-                        <option value="">Goes into… (pick the account)</option>
-                        {assets.map((a) => <option key={a.id} value={a.id}>{a.name} ({money(a.value)})</option>)}
-                      </select>
-                    )}
-                    {isLoanCategory(l.category) && (
-                      <select aria-label="Pays down" className="input !py-2 text-sm" value={l.debt}
-                        onChange={(e) => setLine(i, { debt: e.target.value })}>
-                        <option value="">Pays down… (pick the loan)</option>
-                        {loanDebts.map((d) => <option key={d.id} value={d.id}>{d.name} ({money(d.balance)})</option>)}
-                      </select>
-                    )}
-                  </div>
-                </li>
-              ))}
+              {indexed.filter(({ l }) => !l.employer_paid).map(lineRow)}
             </ul>
             <button type="button" className="btn-ghost mt-2 text-sm"
               onClick={() => setLines((ls) => [...ls, { category: "federal_tax", label: "", amount: 0, debt: "", asset: "" }])}>
@@ -592,6 +648,24 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
             {Math.abs(gap) < 0.01
               ? "✓ Gross minus everything above equals the take-home."
               : `${money(Math.abs(gap), { cents: true })} ${gap > 0 ? "isn't accounted for. Add the missing line." : "too much is listed. Check the amounts."}`}
+          </div>
+
+          <div>
+            <div className="field-label flex items-baseline justify-between gap-3">
+              <span>Paid by your employer</span>
+              {employerTotal > 0 && <span className="num">+{money(employerTotal, { cents: true })}</span>}
+            </div>
+            <p className="mb-2 text-xs font-semibold opacity-70">
+              Insurance, a 401(k) contribution or an HSA contribution your employer pays on top of your pay. It isn't
+              taken out of gross pay, so it's not in the check above.
+            </p>
+            <ul className="space-y-2">
+              {indexed.filter(({ l }) => l.employer_paid).map(lineRow)}
+            </ul>
+            <button type="button" className="btn-ghost mt-2 text-sm"
+              onClick={() => setLines((ls) => [...ls, { category: "401k", label: "", amount: 0, debt: "", asset: "", employer_paid: true }])}>
+              <Icon name="plus" className="h-4 w-4" /> Add an employer contribution
+            </button>
           </div>
 
           {existing?.file && (

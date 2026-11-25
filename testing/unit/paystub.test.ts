@@ -48,6 +48,52 @@ describe("paystub reader", () => {
     ]);
     expect(unexplained(r.gross!, r.net!, r.lines)).toBe(0);
     expect(readingLooksGood(r)).toBe(true);
+    expect(r.employer).toEqual([{ label: "Employer 401K Match", category: "401k", amount: 105 }]);
+  });
+
+  it("reads an Employer Contributions section apart from the deductions", () => {
+    // Laid out like a Gusto-style stub: deductions, then what the employer paid.
+    const r = readPaystub([
+      ["Pay Date", "11/13/2026"],
+      ["Gross Pay", "$4,791.67"],
+      ["Taxes"],
+      ["Federal Income Tax", "$542.23", "$9,000.00"],
+      ["Social Security", "$256.50", "$5,000.00"],
+      ["Medicare", "$59.99", "$1,200.00"],
+      ["Deductions"],
+      ["Description", "Type", "Current", "Year To Date"],
+      ["Employee Medical Insurance", "Medical Insurance", "$30.91", "$600.00"],
+      ["Dependents Medical Insurance", "Medical Insurance", "$296.37", "$6,000.00"],
+      ["Dependents Dental Insurance", "Dental Insurance", "$23.30", "$480.00"],
+      ["Dependents Vision Insurance", "Vision Insurance", "$4.08", "$85.36"],
+      ["Guideline Roth 401(k)", "Roth 401(k)", "$239.58", "$5,000.00"],
+      ["Health Savings Account", "HSA", "$300.00", "$6,000.00"],
+      ["Guideline 401(k) Loan", "401(k) Loan", "$113.36", "$2,300.00"],
+      ["Employer Contributions"],
+      ["Description", "Type", "Current", "Year To Date"],
+      ["Employee Medical Insurance", "Medical Insurance", "$236.34", "$4,955.06"],
+      ["Employee Dental Insurance", "Dental Insurance", "$22.74", "$475.69"],
+      ["Employee Vision Insurance", "Vision Insurance", "$4.08", "$85.36"],
+      ["Guideline Traditional 401(k)", "401(k)", "$191.67", "$4,271.25"],
+      ["Summary"],
+      ["Net Pay", "$2,925.35"],
+    ]);
+    expect(r.lines.map((l) => [l.category, l.amount])).toEqual([
+      ["federal_tax", 542.23], ["social_security", 256.5], ["medicare", 59.99],
+      ["medical", 30.91], ["medical", 296.37], ["dental", 23.3], ["vision", 4.08],
+      ["roth_401k", 239.58], ["hsa", 300], ["401k_loan", 113.36],
+    ]);
+    // A traditional 401(k) contribution from the employer stays traditional.
+    expect(r.employer.map((l) => [l.category, l.amount])).toEqual([
+      ["medical", 236.34], ["dental", 22.74], ["vision", 4.08], ["401k", 191.67],
+    ]);
+    expect(unexplained(r.gross!, r.net!, r.lines)).toBe(0);
+    expect(readingLooksGood(r)).toBe(true);
+  });
+
+  it("leaves employer-paid taxes out", () => {
+    const r = readPaystub([["Gross Pay", "1,000.00"], ["Employer Contributions"], ["ER Medicare", "14.50"], ["ER HSA", "50.00"], ["Net Pay", "1,000.00"]]);
+    expect(r.employer).toEqual([{ label: "ER HSA", category: "hsa", amount: 50 }]);
   });
 
   it("splits two deduction columns that share a row", () => {
@@ -91,6 +137,18 @@ describe("paystub reader", () => {
     const r = fromAgent({ pay_date: "2026-11-21", gross: "3500", net: 2580.1, lines: [{ label: "X", category: "nonsense", amount: -5 }, { label: "Y", category: "dental", amount: 0 }] });
     expect(r.gross).toBe(3500);
     expect(r.lines).toEqual([{ label: "X", category: "other_pre_tax", amount: 5 }]);
+    expect(r.employer).toEqual([]);
+  });
+
+  it("reads employer contributions from an agent reply", () => {
+    const r = fromAgent({ gross: 100, net: 90, lines: [], employer: [
+      { label: "ER 401k", category: "401k", amount: 191.67 }, { label: "ER FICA", category: "medicare", amount: 9 },
+      { label: "ER Life", category: "401k_loan", amount: 3 },
+    ] });
+    expect(r.employer).toEqual([
+      { label: "ER 401k", category: "401k", amount: 191.67 },
+      { label: "ER Life", category: "other_pre_tax", amount: 3 },
+    ]);
   });
 });
 
