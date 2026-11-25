@@ -30,7 +30,7 @@ const SOURCE_LABELS: Record<string, string> = { upload: "From paystub", manual: 
  * The paycheck side of the budget: deposits waiting for a paystub, what came
  * out of each paycheck before it reached the bank, and the household's earners.
  */
-export function Paychecks({ month }: { month: string }) {
+export function Paychecks({ month, onAddIncome }: { month: string; onAddIncome?: () => void }) {
   const [data, setData] = useState<PaycheckData | null>(null);
   const [debts, setDebts] = useState<Debt[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -69,6 +69,9 @@ export function Paychecks({ month }: { month: string }) {
 
       <SectionTitle action={
         <div className="flex flex-wrap justify-end gap-2">
+          {onAddIncome && (
+            <Button small color="butter" onClick={onAddIncome}><Icon name="plus" className="h-5 w-5" /> Income</Button>
+          )}
           {activeEarners.length > 0 && (
             <Button small color="sky" onClick={() => setStub({ earner: activeEarners[0].id })}>
               <Icon name="plus" className="h-5 w-5" /> Paystub

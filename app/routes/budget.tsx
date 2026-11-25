@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
-  createEnvelope, createTransaction, listEarners, deleteEnvelope, deleteTransaction, errorMessage, fromPbDate,
+  createEnvelope, createTransaction, listEarners, listWaitingDeposits, deleteEnvelope, deleteTransaction, errorMessage, fromPbDate,
   listTaxDocuments, listVendors, loadMonth, setAllocation, startMonth, subscribeAll, toPbDate, updateBudget, updateEnvelope,
   type MonthData,
 } from "~/backend/api";
@@ -19,7 +19,7 @@ import {
   Button, Card, ColorPicker, EmptyState, ErrorNote, FormActions, Icon, Meter, Modal, MoneyInput,
   RoundButton, SectionTitle, Select, Stat, TextInput, Toggle, cx,
 } from "~/components/ui";
-import { GROUP_LABELS, STARTER_ENVELOPES, isAnnual, monthlyToGoal, summarize, type EnvelopeSummary } from "~/lib/budget";
+import { GROUP_LABELS, STARTER_ENVELOPES, isAnnual, monthLeftShare, monthlyToGoal, summarize, type EnvelopeSummary } from "~/lib/budget";
 import { monthLabel, monthOf, nextMonth, shortDate, todayISO } from "~/lib/dates";
 import { money, parseMoney } from "~/lib/money";
 import { TAX_CATEGORY_EMOJI, TAX_CATEGORY_LABELS, taxRows, type TaxRow } from "~/lib/tax";
@@ -32,6 +32,7 @@ const GROUP_ORDER = new Map(ENVELOPE_GROUPS.map((g, i) => [g, i]));
 
 const VIEWS = [
   { key: "envelopes", label: "Envelopes", emoji: "✉️" },
+  { key: "income", label: "Income", emoji: "💼" },
   { key: "vendors", label: "Vendors", emoji: "🏪" },
   { key: "taxes", label: "Taxes", emoji: "🧾" },
 ] as const;
@@ -49,14 +50,18 @@ export default function BudgetPage() {
   const [data, setData] = useState<MonthData | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [docs, setDocs] = useState<TaxDocument[]>([]);
+  const [waiting, setWaiting] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      const [d, v, td] = await Promise.all([loadMonth(month), listVendors(), listTaxDocuments(Number(month.slice(0, 4)))]);
+      const [d, v, td, w] = await Promise.all([
+        loadMonth(month), listVendors(), listTaxDocuments(Number(month.slice(0, 4))), listWaitingDeposits(),
+      ]);
       setData(d);
       setVendors(v);
       setDocs(td);
+      setWaiting(w.length);
       setError(null);
     } catch (err) {
       setError(errorMessage(err));
@@ -68,7 +73,7 @@ export default function BudgetPage() {
     reload();
   }, [reload]);
 
-  useEffect(() => subscribeAll(["envelopes", "budgets", "allocations", "transactions", "vendors"], reload), [reload]);
+  useEffect(() => subscribeAll(["envelopes", "budgets", "allocations", "transactions", "vendors", "paystubs"], reload), [reload]);
 
   const summary = useMemo(
     () => data && summarize(data.envelopes, data.allocations, data.transactions, data.carried,
@@ -113,6 +118,9 @@ export default function BudgetPage() {
             <button key={v.key} type="button" role="tab" aria-selected={view === v.key} onClick={() => go(month, v.key)}
               className={cx("rounded-full px-4 py-2 sm:px-5", view === v.key && "bg-white shadow")}>
               <span aria-hidden="true">{v.emoji}</span> {v.label}
+              {v.key === "income" && waiting > 0 && (
+                <span className="ml-1.5 inline-block h-2.5 w-2.5 rounded-full bg-[var(--coral-deep)] align-middle" title="A paycheck needs its paystub" />
+              )}
             </button>
           ))}
         </div>
@@ -131,11 +139,22 @@ export default function BudgetPage() {
       ) : !data.budget ? (
         <StartMonth month={month} hasEnvelopes={data.envelopes.some((e) => !e.archived)} onStarted={reload}
           onImport={() => setImporting(true)} />
-      ) : summary && (
+      ) : summary && view === "income" ? (
         <>
           <SummaryRow summary={summary} onEditIncome={() => setEditIncome(true)} />
-
-          <Paychecks month={month} />
+          <Paychecks month={month} onAddIncome={() => setAdding("income")} />
+        </>
+      ) : summary && (
+        <>
+          {waiting > 0 && (
+            <div className="tray mt-2 flex flex-wrap items-center justify-between gap-3 px-5 py-4 font-semibold">
+              <span>
+                <span aria-hidden="true">💼 </span>
+                {waiting === 1 ? "A paycheck is" : `${waiting} paychecks are`} waiting for a paystub.
+              </span>
+              <Button small color="sky" onClick={() => go(month, "income")}>Go to Income</Button>
+            </div>
+          )}
 
           <SectionTitle action={
             <div className="flex flex-wrap justify-end gap-2">
@@ -150,10 +169,10 @@ export default function BudgetPage() {
             </EmptyState>
           ) : null}
 
-          <EnvelopeGroup title={annual.length ? "Monthly" : null} items={monthly} offset={0}
+          <EnvelopeGroup title="Monthly" items={monthly} offset={0} month={month}
             onOpen={setOpenEnvelope} onNew={() => setEditing("new")} />
           {annual.length > 0 && (
-            <EnvelopeGroup title="Annual" items={annual} offset={monthly.length} onOpen={setOpenEnvelope} />
+            <EnvelopeGroup title="Annual" items={annual} offset={monthly.length} month={month} onOpen={setOpenEnvelope} />
           )}
 
           <div className="mt-4 text-right">
@@ -280,79 +299,116 @@ function SummaryRow({ summary, onEditIncome }: { summary: ReturnType<typeof summ
   );
 }
 
-// ---------- Envelope card ----------
+// ---------- Envelope list ----------
 
-function EnvelopeGroup({ title, items, offset, onOpen, onNew }: {
-  title: string | null; items: EnvelopeSummary[]; offset: number; onOpen: (id: string) => void; onNew?: () => void;
+const COLLAPSED_KEY = "ft.collapsedGroups";
+
+function readCollapsed(title: string): boolean {
+  try {
+    return (JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]") as string[]).includes(title);
+  } catch {
+    return false;
+  }
+}
+
+function writeCollapsed(title: string, collapsed: boolean) {
+  try {
+    const list = (JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]") as string[]).filter((t) => t !== title);
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed ? [...list, title] : list));
+  } catch {
+    // Collapsing still works for this visit.
+  }
+}
+
+function EnvelopeGroup({ title, items, offset, month, onOpen, onNew }: {
+  title: string; items: EnvelopeSummary[]; offset: number; month: string; onOpen: (id: string) => void; onNew?: () => void;
 }) {
   const total = items.reduce((sum, s) => sum + (s.historyOnly ? 0 : s.left), 0);
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => setCollapsed(readCollapsed(title)), [title]);
+  const toggle = () => { writeCollapsed(title, !collapsed); setCollapsed(!collapsed); };
+  const pace = month === monthOf() ? monthLeftShare(month) : null;
+
   return (
-    <section className={title ? "mt-6" : ""} aria-label={title ?? "Envelopes"}>
-      {title && (
-        <div className="mb-3 flex items-baseline justify-between px-1">
-          <h3 className="text-lg font-black">{title}</h3>
-          {items.some((s) => !s.historyOnly) && (
-            <span className="num font-black opacity-80" title="Cash in these envelopes">{money(total, { cents: true })}</span>
+    <section className="mt-5" aria-label={title}>
+      <button type="button" onClick={toggle} aria-expanded={!collapsed}
+        className="flex w-full items-baseline justify-between gap-3 rounded-2xl px-2 py-1 text-left hover:bg-[rgba(var(--ink-rgb),.05)]">
+        <span className="flex items-center gap-2 text-xl font-black">
+          <Icon name="right" className={cx("h-5 w-5 transition-transform", !collapsed && "rotate-90")} />
+          {title}
+        </span>
+        {items.some((s) => !s.historyOnly) && (
+          <span className="num text-xl font-black" title="Cash in these envelopes">{money(total, { cents: true })}</span>
+        )}
+      </button>
+      {!collapsed && (
+        <div className="tray mt-2 overflow-hidden">
+          {items.map((s, i) => (
+            <EnvelopeRow key={s.envelope.id} s={s} index={offset + i} pace={isAnnual(s.envelope) ? null : pace}
+              onOpen={() => onOpen(s.envelope.id)} />
+          ))}
+          {onNew && (
+            <button type="button" onClick={onNew}
+              className="flex w-full items-center gap-3 px-5 py-4 font-black opacity-80 hover:bg-white hover:opacity-100">
+              <span className="round-btn h-9 w-9"><Icon name="plus" className="h-5 w-5" /></span>
+              New envelope
+            </button>
           )}
         </div>
       )}
-      <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-4">
-        {items.map((s, i) => (
-          <EnvelopeCard key={s.envelope.id} s={s} index={offset + i} onOpen={() => onOpen(s.envelope.id)} />
-        ))}
-        {onNew && (
-          <button type="button" onClick={onNew}
-            className="tray pop-in flex min-h-[220px] flex-col items-center justify-center gap-2 font-black opacity-80 hover:opacity-100"
-            style={{ ["--i" as any]: offset + items.length }}>
-            <span className="round-btn"><Icon name="plus" /></span>
-            New envelope
-          </button>
-        )}
-      </div>
     </section>
   );
 }
 
-function EnvelopeCard({ s, index, onOpen }: { s: EnvelopeSummary; index: number; onOpen: () => void }) {
+function EnvelopeRow({ s, index, pace, onOpen }: {
+  s: EnvelopeSummary; index: number; pace: number | null; onOpen: () => void;
+}) {
   const color = (s.envelope.color || "lilac") as Color;
   const over = s.left < 0;
   const annual = isAnnual(s.envelope);
   const of = annual && s.envelope.goal ? s.envelope.goal : s.planned + s.carried + s.added;
   return (
     <button type="button" onClick={onOpen}
-      className={cx("chunk chunk-press pop-in flex flex-col items-stretch p-4 text-left", `c-${color}`, s.envelope.archived && "opacity-60")}
+      className={cx("pop-in block w-full border-b-[3px] border-[rgba(var(--ink-rgb),.06)] px-5 py-3 text-left hover:bg-white",
+        `c-${color}`, s.envelope.archived && "opacity-60")}
       style={{ ["--i" as any]: index }}
       aria-label={s.historyOnly ? `${s.envelope.name}: ${money(s.spent)} spent` : `${s.envelope.name}: ${money(s.left)} left of ${money(of)}`}>
-      <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-lg font-black">
-          {s.envelope.emoji && <span className="mr-1" aria-hidden="true">{s.envelope.emoji}</span>}
-          {s.envelope.name}
+      <div className="flex items-center justify-between gap-3">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="w-8 shrink-0">
+            {s.envelope.emoji
+              ? <span className="text-xl" aria-hidden="true">{s.envelope.emoji}</span>
+              : <EnvelopeArt fullness={s.historyOnly ? 0 : s.fullness} overspent={over && !s.historyOnly} />}
+          </span>
+          <span className="truncate text-lg font-black">{s.envelope.name}</span>
+          {annual
+            ? <span className="pill c-white text-[10px]" title="Saves toward a yearly goal">YEARLY</span>
+            : s.envelope.rollover && <span className="pill c-white text-[10px]" title="Leftover cash rolls into next month">ROLLS</span>}
         </span>
-        {annual
-          ? <span className="pill c-white text-[10px]" title="Saves toward a yearly goal">YEARLY</span>
-          : s.envelope.rollover && <span className="pill c-white text-[10px]" title="Leftover cash rolls into next month">ROLLS</span>}
+        <span className="shrink-0 text-right leading-tight">
+          {s.historyOnly ? (
+            <>
+              <span className="num block text-lg font-black">{money(s.spent, { cents: true })}</span>
+              <span className="num block text-xs font-extrabold opacity-70">spent</span>
+            </>
+          ) : (
+            <>
+              <span className={cx("num block text-lg font-black", over && "text-[#c45c5c]")}>{money(s.left, { cents: true })}</span>
+              <span className="num block text-xs font-extrabold opacity-70"
+                title={annual ? (s.envelope.goal ? "Yearly goal" : "Saved") : "Budgeted this month"}>
+                {money(of, { cents: true })}
+              </span>
+            </>
+          )}
+        </span>
       </div>
-      <div className="mx-auto mt-2 w-[78%]"><EnvelopeArt fullness={s.historyOnly ? 0 : s.fullness} overspent={over && !s.historyOnly} /></div>
-      <div className="mt-2 text-center">
-        {s.historyOnly ? (
-          <>
-            <div className="num text-2xl font-black">{money(s.spent)}</div>
-            <div className="text-xs font-extrabold opacity-75">spent{s.added > 0 && <> · {money(s.added)} back</>}</div>
-          </>
-        ) : (
-          <>
-            <div className={cx("num text-2xl font-black", over && "text-[#c45c5c]")}>{money(s.left)}</div>
-            <div className="text-xs font-extrabold opacity-75">
-              {annual ? (
-                <>{s.envelope.goal ? <>of {money(s.envelope.goal)} goal</> : "saved"} · {money(s.yearSpent)} spent this year</>
-              ) : (
-                <>
-                  {over ? "overspent" : "left"} of {money(of)}
-                  {s.carried !== 0 && <> · {money(s.carried)} carried</>}
-                </>
-              )}
-            </div>
-          </>
+      <div className="relative mt-2">
+        <div className="meter h-3">
+          <span style={{ width: `${Math.round((s.historyOnly ? 0 : s.fullness) * 100)}%` }} />
+        </div>
+        {pace !== null && !s.historyOnly && (
+          <span className="absolute -bottom-1 -top-1 w-[3px] -translate-x-1/2 rounded-full bg-[rgb(var(--ink-rgb))] opacity-60"
+            style={{ left: `${pace * 100}%` }} title="Where you'd be if you spent evenly through the month" />
         )}
       </div>
     </button>

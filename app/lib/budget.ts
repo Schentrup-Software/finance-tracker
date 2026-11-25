@@ -130,3 +130,17 @@ export function monthlyToGoal(goal: number, saved: number, month: string): numbe
   const monthsLeft = 12 - Number(month.slice(5, 7)) + 1;
   return round2(Math.max(0, goal - saved) / Math.max(1, monthsLeft));
 }
+
+/**
+ * Share of the month still to come (0..1), the "where you should be" tick on an
+ * envelope's bar: cash left above it means you're spending slower than the month
+ * is passing. Past months are 0 and future months 1.
+ */
+export function monthLeftShare(month: string, today: Date = new Date()): number {
+  const [y, m] = month.split("-").map(Number);
+  const ty = today.getFullYear(), tm = today.getMonth() + 1;
+  if (y < ty || (y === ty && m < tm)) return 0;
+  if (y > ty || m > tm) return 1;
+  const days = new Date(y, m, 0).getDate();
+  return (days - today.getDate()) / days;
+}
