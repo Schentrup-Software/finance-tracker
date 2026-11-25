@@ -79,6 +79,48 @@ routerAdd("GET", "/api/finance/setup", (e) => {
   return e.json(200, { signupOpen: e.app.countRecords("users") === 0 });
 });
 
+// ---------- API tokens (for n8n and scripts) ----------
+
+// A request with `Authorization: ft_...` is signed in as the member who made that token,
+// so it can do anything they can in the app: the collection API, /api/sync and the rest.
+// A PocketBase JWT is left to PocketBase.
+routerUse((e) => {
+  if (!e.auth) {
+    const lib = require(`${__hooks}/finance/lib.js`);
+    const raw = lib.bearerOf(e);
+    if (lib.isApiToken(raw)) lib.authWithApiToken(e, raw);
+  }
+  return e.next();
+});
+
+// A token can't be traded for a regular (refreshable) session, so revoking it really ends it.
+onRecordAuthRefreshRequest((e) => {
+  require(`${__hooks}/finance/lib.js`).requireSession(e, "An API token can't be swapped for a sign-in. Use the token itself.");
+  e.next();
+}, "users");
+
+// GET /api/tokens -> { items: [ { id, name, prefix, created, last_used, user: { id, name, email } } ] }
+routerAdd("GET", "/api/tokens", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  lib.requireSession(e);
+  return e.json(200, { items: lib.listApiTokens(e.app, lib.householdOf(e.auth)) });
+}, $apis.requireAuth("users"));
+
+// POST /api/tokens  { "name" } -> the new token, with `token` (shown once, never stored)
+routerAdd("POST", "/api/tokens", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  lib.requireSession(e);
+  return e.json(200, lib.createApiToken(e.app, e.auth, (e.requestInfo().body || {}).name));
+}, $apis.requireAuth("users"));
+
+// DELETE /api/tokens/{id}: revoke; it stops working at once.
+routerAdd("DELETE", "/api/tokens/{id}", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  lib.requireSession(e);
+  lib.revokeApiToken(e.app, lib.householdOf(e.auth), e.request.pathValue("id"));
+  return e.json(200, { ok: true });
+}, $apis.requireAuth("users"));
+
 // ---------- Owner ----------
 
 // Records belong to the household: `owner` is the head of the signed-in user's

@@ -4,6 +4,7 @@
 #   - each user only sees and links their own records
 #   - debt payments move the debt balance
 #   - /api/sync/{collection} creates, then updates, by external_id
+#   - API tokens act as their member until revoked
 set -euo pipefail
 
 B="${PB_URL:-http://localhost:8090}"
@@ -132,8 +133,12 @@ check "another household can't see our members" "$(j -H "$OTHER" "$B/api/collect
 check "a member can't add people" "$(j -H "$M" -X POST "$B/api/household/members" -d '{"email":"x@smoke.test","password":"password123"}' | field '["status"]')" "403"
 check "a member can't move themself to another household" "$(j -H "$M" -X PATCH "$B/api/collections/users/records/$MEMBER_ID" -d "{\"household\":\"$MEMBER_ID\"}" | field '["status"]')" "404"
 check "another head can't remove our member" "$(j -H "$OTHER" -X DELETE "$B/api/household/members/$MEMBER_ID" | field '["status"]')" "404"
+MKEY=$(j -H "$M" -X POST "$B/api/tokens" -d '{"name":"member script"}' | field '["token"]')
 check "the head resets a member's password" "$(j -H "$A" -X POST "$B/api/household/members/$MEMBER_ID/password" -d '{"password":"newpassword456"}' | field '["ok"]')" "True"
+check "a token outlives a password change" "$(j -H "Authorization: $MKEY" "$B/api/collections/envelopes/records/$MENV" | field '["name"]')" "Date night"
+check "a member's token works" "$(j -H "Authorization: $MKEY" "$B/api/collections/envelopes/records/$MENV" | field '["name"]')" "Date night"
 check "the head removes a member" "$(j -H "$A" -X DELETE "$B/api/household/members/$MEMBER_ID" | field '["ok"]')" "True"
+check "a removed member's token stops working" "$(j -H "Authorization: $MKEY" "$B/api/collections/envelopes/records" | field '["status"]')" "401"
 check "a removed member can't sign in" "$(j -X POST "$B/api/collections/users/auth-with-password" -d "{\"identity\":\"m-$RUN@smoke.test\",\"password\":\"newpassword456\"}" | field '["status"]')" "400"
 check "their envelope stays with the household" "$(j -H "$A" "$B/api/collections/envelopes/records/$MENV" | field '["name"]')" "Date night"
 
@@ -170,6 +175,31 @@ DOC=$(curl -s -H "$A" -X POST "$B/api/collections/tax_documents/records" -F "fil
 check "a year-end statement is stored for the household" "$(j -H "$A" "$B/api/collections/tax_documents/records/$DOC" | field '["kind"]')" "year_end_statement"
 check "another household can't attach to my vendor" "$(curl -s -H "$OTHER" -X POST "$B/api/collections/tax_documents/records" -F "file=@/tmp/smoke-receipt.pdf;type=application/pdf" -F "tax_year=2027" -F "vendor=$CHURCH" | field '["status"]')" "400"
 check "tax years are one per household per year" "$(j -H "$A" -X POST "$B/api/collections/tax_years/records" -d '{"year":2027,"agi":1}' > /dev/null; j -H "$A" -X POST "$B/api/collections/tax_years/records" -d '{"year":2027,"agi":2}' | field '["status"]')" "400"
+
+# API tokens: never expire, act as the member who made them, revoked one at a time
+check "a token needs a name" "$(j -H "$A" -X POST "$B/api/tokens" -d '{"name":" "}' | field '["status"]')" "400"
+MADE=$(j -H "$A" -X POST "$B/api/tokens" -d '{"name":"n8n"}')
+KEY=$(echo "$MADE" | field '["token"]')
+KEY_ID=$(echo "$MADE" | field '["id"]')
+K="Authorization: $KEY"
+check "a token starts with ft_" "${KEY:0:3}" "ft_"
+check "the token is listed, without its secret" "$(j -H "$A" "$B/api/tokens" | python3 -c 'import sys,json; print([(t["name"], "token" in t, "token_hash" in t) for t in json.load(sys.stdin)["items"]])')" "[('n8n', False, False)]"
+check "a token reads the household's records" "$(j -H "$K" "$B/api/collections/envelopes/records/$ENV" | field '["name"]')" "Groceries"
+check "a token works as a Bearer header too" "$(j -H "Authorization: Bearer $KEY" "$B/api/collections/envelopes/records/$ENV" | field '["name"]')" "Groceries"
+TENV=$(j -H "$K" -X POST "$B/api/collections/envelopes/records" -d '{"name":"Made by n8n"}' | field '["id"]')
+check "a token creates records for the household" "$(j -H "$A" "$B/api/collections/envelopes/records/$TENV" | field '["name"]')" "Made by n8n"
+check "a token syncs" "$(j -H "$K" -X POST "$B/api/sync/transactions" -d '{"records":[{"external_id":"tok-1","kind":"expense","date":"2026-11-21","amount":1}]}' | field '["created"]')" "1"
+check "a token notes when it was used" "$(j -H "$A" "$B/api/tokens" | python3 -c 'import sys,json; print(bool(json.load(sys.stdin)["items"][0]["last_used"]))')" "True"
+check "a token can't list tokens" "$(j -H "$K" "$B/api/tokens" | field '["status"]')" "403"
+check "a token can't make tokens" "$(j -H "$K" -X POST "$B/api/tokens" -d '{"name":"x"}' | field '["status"]')" "403"
+check "a token can't be swapped for a sign-in" "$(j -H "$K" -X POST "$B/api/collections/users/auth-refresh" | field '["status"]')" "403"
+check "tokens aren't readable through the collection API" "$(j -H "$A" "$B/api/collections/api_tokens/records" | field '["status"]')" "403"
+check "another household doesn't see my tokens" "$(j -H "$OTHER" "$B/api/tokens" | field '["items"]')" "[]"
+check "another household can't revoke my token" "$(j -H "$OTHER" -X DELETE "$B/api/tokens/$KEY_ID" | field '["status"]')" "404"
+check "another household's records stay hidden from my token" "$(j -H "$K" "$B/api/collections/envelopes/records" | python3 -c 'import sys,json; print(all(r["owner"] == sys.argv[1] for r in json.load(sys.stdin)["items"]))' "$(j -H "$A" "$B/api/collections/envelopes/records/$ENV" | field '["owner"]')")" "True"
+check "revoking a token" "$(j -H "$A" -X DELETE "$B/api/tokens/$KEY_ID" | field '["ok"]')" "True"
+check "a revoked token gets 401" "$(j -H "$K" "$B/api/collections/envelopes/records" | field '["status"]')" "401"
+check "a made-up token gets 401" "$(j -H "Authorization: ft_nope" "$B/api/sync/transactions" -X POST -d '{"records":[]}' | field '["status"]')" "401"
 
 echo
 [ "$FAILS" -eq 0 ] && echo "All API checks passed." || { echo "$FAILS check(s) failed."; exit 1; }

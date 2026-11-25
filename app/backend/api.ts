@@ -1,6 +1,6 @@
 // ALL PocketBase calls go through this file. Components never call pb directly.
 
-import pb from "./pocketbaseClient";
+import pb, { POCKETBASE_URL } from "./pocketbaseClient";
 import type {
   Allocation, Asset, BaseRecord, Budget, Debt, DebtPayment, Draft, Earner, Envelope, Paystub, PaystubLine, TaxDocument,
   TaxYear, Transaction, Vendor,
@@ -232,6 +232,37 @@ export function removeMember(id: string) {
 export async function updateMyName(name: string) {
   const id = pb.authStore.record?.id;
   if (id) await pb.collection("users").update(id, { name });
+}
+
+// ---------- API tokens ----------
+
+export interface ApiToken {
+  id: string;
+  name: string;
+  /** The token's first few characters, to tell tokens apart. */
+  prefix: string;
+  created: string;
+  last_used: string;
+  /** The household member the token acts as. */
+  user: { id: string; name: string; email: string } | null;
+}
+
+/** The address API clients (n8n) send requests to. */
+export function apiBaseUrl(): string {
+  return POCKETBASE_URL.replace(/\/+$/, "");
+}
+
+export async function listApiTokens(): Promise<ApiToken[]> {
+  return (await pb.send<{ items: ApiToken[] }>("/api/tokens", { method: "GET" })).items;
+}
+
+/** Makes a token that acts as the signed-in user. The returned `token` is shown once and never again. */
+export function createApiToken(name: string) {
+  return pb.send<ApiToken & { token: string }>("/api/tokens", { method: "POST", body: { name } });
+}
+
+export function revokeApiToken(id: string) {
+  return pb.send(`/api/tokens/${id}`, { method: "DELETE" });
 }
 
 // ---------- Import ----------

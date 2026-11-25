@@ -60,8 +60,8 @@ settings.
    password are your login, and you become the **head of the household**. Sign-up closes
    as soon as the account exists.
 2. **Admin dashboard account.** You need a superuser for the PocketBase dashboard at
-   `http://<your-nas-ip>:30680/_/` (to mint a long-lived token for
-   n8n, or to look at the raw data). In TrueNAS: **Apps** → `finance-tracker` → **Workloads** → the container's
+   `http://<your-nas-ip>:30680/_/` (to look at the raw data; n8n's token
+   comes from the app's **API tokens** page). In TrueNAS: **Apps** → `finance-tracker` → **Workloads** → the container's
    **Shell** button, then run:
 
    ```sh
