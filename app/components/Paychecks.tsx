@@ -643,7 +643,17 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <MoneyInput label="Gross pay" required value={gross} onChange={(e) => setGross(e.target.value)} />
-            <MoneyInput label="Net pay (take-home)" required value={net} onChange={(e) => setNet(e.target.value)} />
+            <MoneyInput label="Net pay" required value={net} onChange={(e) => setNet(e.target.value)} />
+          </div>
+          <div className="text-center" aria-live="polite">
+            <div className="text-sm font-extrabold uppercase tracking-wide opacity-75">Check amount</div>
+            <div className="num text-3xl font-black" aria-label="Check amount">{money(deposit, { cents: true })}</div>
+            <div className="text-xs font-semibold opacity-70">Net pay plus reimbursements: what lands in the bank</div>
+            {initial.tx && Math.abs(initial.tx.amount - deposit) >= 0.01 && (
+              <p className="c-butter mt-2 rounded-2xl px-4 py-3 text-sm font-black" style={{ background: "var(--c)" }}>
+                The deposit was {money(initial.tx.amount, { cents: true })}. Check the net pay and reimbursements.
+              </p>
+            )}
           </div>
 
           <div>
@@ -667,7 +677,7 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
           <div>
             <div className="field-label">Reimbursements</div>
             <p className="mb-2 text-xs font-semibold opacity-70">
-              Paid on top of take-home pay (an insurance offset, a stipend), so they land in the bank with it.
+              Paid on top of net pay (an insurance offset, a stipend), so they're part of the check amount.
             </p>
             <ul className="space-y-2">
               {indexed.filter(({ l }) => isReimbursement(l)).map(({ l, i }) => (
@@ -685,15 +695,6 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
               onClick={() => setLines((ls) => [...ls, { category: "reimbursement", label: "", amount: 0, debt: "", asset: "" }])}>
               <Icon name="plus" className="h-4 w-4" /> Add a reimbursement
             </button>
-            <div className="mt-2 flex items-baseline justify-between gap-3 rounded-2xl bg-white/70 px-4 py-3 text-sm font-black">
-              <span>Lands in the bank (take-home plus reimbursements)</span>
-              <span className="num">{money(deposit, { cents: true })}</span>
-            </div>
-            {initial.tx && Math.abs(initial.tx.amount - deposit) >= 0.01 && (
-              <p className="c-butter mt-2 rounded-2xl px-4 py-3 text-sm font-black" style={{ background: "var(--c)" }}>
-                The deposit was {money(initial.tx.amount, { cents: true })}. Check the take-home pay and reimbursements.
-              </p>
-            )}
           </div>
 
           <div>

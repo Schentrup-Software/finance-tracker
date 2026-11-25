@@ -170,6 +170,8 @@ test("paychecks: read a PDF paystub, then match the next paycheck to the cent", 
   // The health insurance offset is paid on top of take-home, so the bank got the check amount.
   await expect(d.getByLabel("Reimbursement", { exact: true })).toHaveValue("Health Insurance Offset");
   await expect(d.getByText("$2,363.10")).toBeVisible();
+  await d.getByLabel("Gross pay").scrollIntoViewIfNeeded();
+  if (process.env.SCREENSHOTS) await d.screenshot({ path: `${process.env.SCREENSHOTS}/05a-check-amount.png` });
   await d.getByRole("button", { name: "Add an employer contribution" }).scrollIntoViewIfNeeded();
   if (process.env.SCREENSHOTS) await d.screenshot({ path: `${process.env.SCREENSHOTS}/05b-employer-contributions.png` });
   await shot(page, "05-paystub-review");
