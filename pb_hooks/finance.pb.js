@@ -301,6 +301,14 @@ onRecordDelete((e) => {
   lib.adjustAssetValue(e.app, asset, -amount, "");
 }, "paystub_lines");
 
+// POST /api/paystubs/{id}/backfill: copy this paystub to earlier deposits from the
+// same earner that are waiting for a paystub and match its check amount to the cent.
+// The app calls it after saving a paystub's lines. -> { filled: <count> }
+routerAdd("POST", "/api/paystubs/{id}/backfill", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  return e.json(200, { filled: lib.backfillPaystub(e.app, lib.householdOf(e.auth), e.request.pathValue("id")) });
+}, $apis.requireAuth("users"));
+
 // ---------- Paystub reader fallback (OpenClaw) ----------
 
 // Whether a fallback reader is configured, so the app can offer it.

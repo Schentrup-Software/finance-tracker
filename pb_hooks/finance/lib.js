@@ -230,8 +230,22 @@ function matchPaycheck(app, tx) {
   return { status: "needs_paystub", template: null };
 }
 
-/** Copies a paystub and its lines for a new deposit (same pay, same deductions). */
-function repeatPaystub(app, template, tx) {
+/** True when a debt or asset was added after `date`, so its balance already counts what happened before. */
+function addedAfter(app, collection, id, date) {
+  try {
+    return app.findRecordById(collection, id).getString("created") > date;
+  } catch (_) {
+    return true;
+  }
+}
+
+/**
+ * Copies a paystub and its lines for a deposit (same pay, same deductions).
+ * For an earlier deposit (`backfill`), loan and contribution lines only touch a
+ * debt or asset that was already in the app on that date: a balance typed in
+ * later already includes those payments.
+ */
+function repeatPaystub(app, template, tx, backfill) {
   const collection = app.findCollectionByNameOrId("paystubs");
   const copy = new Record(collection);
   copy.set("owner", tx.get("owner"));
@@ -256,8 +270,12 @@ function repeatPaystub(app, template, tx) {
     l.set("category", line.get("category"));
     l.set("label", line.get("label"));
     l.set("amount", line.getFloat("amount"));
-    l.set("debt", line.get("debt"));
-    l.set("asset", line.get("asset"));
+    let debt = line.get("debt");
+    let asset = line.get("asset");
+    if (backfill && debt && addedAfter(app, "debts", debt, tx.getString("date"))) debt = "";
+    if (backfill && asset && addedAfter(app, "assets", asset, tx.getString("date"))) asset = "";
+    l.set("debt", debt);
+    l.set("asset", asset);
     l.set("employer_paid", line.getBool("employer_paid"));
     l.set("sort", line.getFloat("sort"));
     app.save(l);
@@ -317,6 +335,37 @@ function attachPaystub(app, paystub) {
     if (p.id !== paystub.id && p.get("source") === "repeat") app.delete(p);
   }
   setPaystubStatus(app, tx, "matched");
+}
+
+/**
+ * Fills in earlier paychecks from a paystub: every deposit from the same earner,
+ * paid before this paystub's pay date, still waiting for a paystub and within a
+ * cent of this one's check amount gets a copy of it, the same way a later
+ * matching deposit does. Run after the paystub's lines are saved. Returns how
+ * many deposits were filled in.
+ */
+function backfillPaystub(app, ownerId, paystubId) {
+  let paystub;
+  try { paystub = app.findRecordById("paystubs", paystubId); } catch (_) { paystub = null; }
+  if (!paystub || paystub.get("owner") !== ownerId) throw new NotFoundError("Paystub not found.");
+  if (paystub.get("source") === "repeat") return 0;
+  const waiting = app.findRecordsByFilter(
+    "transactions",
+    "owner = {:owner} && earner = {:earner} && kind = 'income' && paystub_status = 'needs_paystub' && date < {:before} && id != {:self}",
+    "date",
+    0,
+    0,
+    { owner: ownerId, earner: paystub.get("earner"), before: paystub.getString("pay_date"), self: paystub.get("transaction") || "" },
+  );
+  let filled = 0;
+  for (const tx of waiting) {
+    if (!sameMoney(tx.getFloat("amount"), depositOf(paystub))) continue;
+    if (paystubsForTransaction(app, tx.id).length > 0) continue;
+    repeatPaystub(app, paystub, tx, true);
+    setPaystubStatus(app, tx, "matched");
+    filled++;
+  }
+  return filled;
 }
 
 /** When a paystub linked to a deposit goes away, the deposit needs one again. */
@@ -987,5 +1036,5 @@ module.exports = {
   envelopeBalances, importBudgets,
   agentConfig, readPaystubWithAgent, adjustAssetValue, payDateOf,
   OWNED, SYNCABLE, upsert, adjustDebtBalance,
-  setPaystubStatus, reconcilePaycheck, attachPaystub, detachPaystub, syncLinePayment, removeLinePayment,
+  setPaystubStatus, reconcilePaycheck, attachPaystub, detachPaystub, backfillPaystub, syncLinePayment, removeLinePayment,
 };
