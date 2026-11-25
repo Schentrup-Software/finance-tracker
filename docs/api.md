@@ -15,7 +15,42 @@ Every data endpoint needs a user token in the `Authorization` header. Data belon
 the household sees and changes the same records. n8n can sign in as any member of your
 household (a member just for n8n works well).
 
-### Option A: sign in with a password (simple)
+### Option A: an API token (recommended for n8n)
+
+In the app, the key button at the top right opens **API tokens**. **New token**, give it a
+name (`n8n`), and copy the token it shows. It starts with `ft_` and is shown only once: the
+app stores just a SHA-256 hash of it.
+
+```http
+GET /api/collections/envelopes/records
+Authorization: ft_...
+```
+
+(`Authorization: Bearer ft_...` works too.) In n8n, store it as a **Header Auth**
+credential with the name `Authorization`.
+
+- A token acts as the household member who made it, so it can do anything they can do in
+  the app: the collection endpoints, `/api/sync/...`, `/api/paystubs/...` and the rest of
+  this page. If the head of the household made it, that includes managing members.
+- Tokens **never expire**, and changing a password doesn't affect them. Revoke one on the
+  API tokens page and it stops working at once
+  (`401`). Removing the member who made it revokes their tokens too.
+- A token can't list, make or revoke tokens, and can't be swapped for a regular sign-in
+  (`auth-refresh` answers `403`), so revoking a leaked token really ends it.
+- A revoked or mistyped token gets `401` on every endpoint, even ones that are otherwise
+  open, so a broken credential fails loudly instead of quietly seeing no data.
+
+Token management (needs a signed-in session, not a token):
+
+| Method | Path | Body | |
+| --- | --- | --- | --- |
+| `GET` | `/api/tokens` | | `{ "items": [ { "id", "name", "prefix", "created", "last_used", "user": { "id", "name", "email" } } ] }`, the household's tokens, newest first |
+| `POST` | `/api/tokens` | `{ "name" }` | Makes a token acting as you. The response has the same fields plus `token`, the only time it's returned |
+| `DELETE` | `/api/tokens/{id}` | | Revokes a token in your household |
+
+`last_used` is updated at most every five minutes.
+
+### Option B: sign in with a password
 
 ```http
 POST /api/collections/users/auth-with-password
@@ -28,10 +63,10 @@ Response: `{ "token": "eyJ...", "record": { "id": "...", ... } }`. Tokens last 7
 default, so sign in at the start of each workflow run. In n8n: an **HTTP Request** node
 for this call, then pass `{{$json.token}}` as the `Authorization` header in later nodes.
 
-### Option B: a long-lived token (no password stored in n8n)
+### Option C: a superuser impersonation token
 
-A superuser can mint a token for a user that lasts as long as you choose. Sign in as a
-superuser (the admin dashboard account), then:
+A superuser can also mint a PocketBase token for a user that lasts as long as you choose.
+Sign in as a superuser (the admin dashboard account), then:
 
 ```http
 POST /api/collections/users/impersonate/{userId}
@@ -41,9 +76,8 @@ Content-Type: application/json
 { "duration": 31536000 }
 ```
 
-The response's `token` is good for one year (`duration` is in seconds). Store it as an
-n8n credential (Header Auth, name `Authorization`). Find `{userId}` in the admin dashboard
-under **users**. To revoke it early, change the user's password.
+`duration` is in seconds. To revoke it early, change the user's password. Option A is
+easier and can be revoked one token at a time.
 
 ## 2. Sync endpoint (recommended for n8n)
 
@@ -306,6 +340,19 @@ Household members are managed by the head:
 
 Anyone else gets `403` (not the head) or `404` (not in your household).
 
+### `api_tokens` — API tokens
+
+Superuser-only through the collection API (and `token_hash` is hidden); use `/api/tokens`
+(see [Authenticate](#1-authenticate)).
+
+| Field | Type | |
+| --- | --- | --- |
+| `user` | relation → users | The member the token acts as. Removing them deletes their tokens |
+| `name` | text | What uses it, like `n8n` |
+| `token_hash` | text | SHA-256 of the token (hex). The token itself isn't stored |
+| `prefix` | text | The token's first 7 characters, to tell tokens apart |
+| `last_used` | date | When it last signed a request (updated at most every five minutes) |
+
 ### `envelopes` — the cash envelopes
 
 | Field | Type | |
@@ -498,6 +545,6 @@ One per household per `year`. Percentages are in percent (`7.5`).
 PocketBase errors look like `{ "status": 400, "message": "...", "data": { "field": { "message": "..." } } }`.
 
 - `400`: invalid data, or a relation to a record that isn't yours.
-- `401`: missing or expired token. Sign in again.
+- `401`: missing or expired sign-in, or a revoked API token.
 - `403`: not allowed (for example, sign-up after the first account).
 - `404`: not found, or not yours.

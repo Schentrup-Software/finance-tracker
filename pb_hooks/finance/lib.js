@@ -823,9 +823,107 @@ function findMember(app, headId, id) {
   return user;
 }
 
+// ---------- API tokens ----------
+
+const TOKEN_PREFIX = "ft_";
+
+/** The raw value of the Authorization header (with or without "Bearer "). */
+function bearerOf(e) {
+  const header = String(e.request.header.get("Authorization") || "").trim();
+  return header.replace(/^Bearer\s+/i, "").trim();
+}
+
+/** Whether a value looks like one of our API tokens (rather than a PocketBase JWT). */
+function isApiToken(value) {
+  return typeof value === "string" && value.indexOf(TOKEN_PREFIX) === 0;
+}
+
+/**
+ * Signs the request in as the member an API token belongs to. Marks the request so routes
+ * can tell it came from a token. Throws a 401 for a token that doesn't exist (revoked).
+ */
+function authWithApiToken(e, raw) {
+  let token = null;
+  try {
+    token = e.app.findFirstRecordByData("api_tokens", "token_hash", $security.sha256(raw));
+  } catch (_) {}
+  let user = null;
+  if (token) {
+    try {
+      user = e.app.findRecordById("users", token.get("user"));
+    } catch (_) {}
+  }
+  if (!token || !user) {
+    throw new UnauthorizedError("This API token isn't valid. It may have been revoked.");
+  }
+  e.auth = user;
+  e.set("apiTokenId", token.id);
+
+  // Note when it was last used, at most every few minutes (a direct update: no hooks, no `updated` bump).
+  const last = Date.parse(String(token.getString("last_used") || "").replace(" ", "T"));
+  const now = Date.now();
+  if (!last || now - last > 5 * 60 * 1000) {
+    e.app.db().newQuery("UPDATE api_tokens SET last_used = {:t} WHERE id = {:id}")
+      .bind({ t: new Date(now).toISOString().replace("T", " "), id: token.id }).execute();
+  }
+}
+
+/** API tokens are managed only from a signed-in session, never with a token (so a leaked one can't make more). */
+function requireSession(e, message) {
+  if (e.get("apiTokenId")) {
+    throw new ForbiddenError(message || "API tokens can't manage API tokens. Sign in to the app to do that.");
+  }
+}
+
+function tokenJSON(app, t) {
+  let by = null;
+  try {
+    const u = app.findRecordById("users", t.get("user"));
+    by = { id: u.id, name: u.getString("name"), email: u.email() };
+  } catch (_) {}
+  return {
+    id: t.id,
+    name: t.getString("name"),
+    prefix: t.getString("prefix"),
+    last_used: t.getString("last_used"),
+    created: t.getString("created"),
+    user: by,
+  };
+}
+
+function listApiTokens(app, ownerId) {
+  return app.findRecordsByFilter("api_tokens", "owner = {:o}", "-created", 0, 0, { o: ownerId }).map((t) => tokenJSON(app, t));
+}
+
+/** Makes a token for `auth`. The plain token is returned once and never stored. */
+function createApiToken(app, auth, name) {
+  name = String(name || "").trim();
+  if (!name) throw new BadRequestError("Give the token a name, like \"n8n\".");
+  if (name.length > 100) throw new BadRequestError("Keep the name under 100 characters.");
+  const raw = TOKEN_PREFIX + $security.randomString(40);
+  const t = new Record(app.findCollectionByNameOrId("api_tokens"));
+  t.set("owner", householdOf(auth));
+  t.set("user", auth.id);
+  t.set("name", name);
+  t.set("token_hash", $security.sha256(raw));
+  t.set("prefix", raw.slice(0, 7));
+  app.save(t);
+  return Object.assign(tokenJSON(app, t), { token: raw });
+}
+
+function revokeApiToken(app, ownerId, id) {
+  let t = null;
+  try {
+    t = app.findRecordById("api_tokens", id);
+  } catch (_) {}
+  if (!t || t.get("owner") !== ownerId) throw new NotFoundError("That token isn't in your household.");
+  app.delete(t);
+}
+
 module.exports = {
   applyVendor, backfillVendor, unmatchedStatements, mergeVendors,
   householdOf, requireHead, findMember,
+  bearerOf, isApiToken, authWithApiToken, requireSession, listApiTokens, createApiToken, revokeApiToken,
   envelopeBalances, importBudgets,
   agentConfig, readPaystubWithAgent, adjustAssetValue, payDateOf,
   OWNED, SYNCABLE, upsert, adjustDebtBalance,

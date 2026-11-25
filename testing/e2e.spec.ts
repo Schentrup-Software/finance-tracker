@@ -339,3 +339,38 @@ test("vendors and taxes: a recurring gift from Bills is matched, tagged and ackn
   await expect(giving.getByText("$100.00")).toBeVisible(); // 600 given - 500 floor
   await shot(page, "13-taxes");
 });
+
+test("API tokens: make one, use it, revoke it", async ({ page, request }) => {
+  await signIn(page);
+  await page.getByRole("button", { name: "API tokens" }).click();
+  await expect(page.getByText("No tokens yet")).toBeVisible();
+  await page.getByRole("button", { name: "New token" }).click();
+  const d = page.getByRole("dialog");
+  await d.getByLabel("Name").pressSequentially("n8n");
+  await d.getByRole("button", { name: "Make token" }).click();
+
+  // Shown once, then only its first characters.
+  const shown = page.getByRole("dialog", { name: "Your new token" });
+  const token = await shown.getByLabel("Token").inputValue();
+  expect(token).toMatch(/^ft_[A-Za-z0-9]{40}$/);
+  await shot(page, "14-new-token");
+  await shown.getByRole("button", { name: "Done" }).click();
+  await expect(page.getByText(token.slice(0, 7) + "…")).toBeVisible();
+  await expect(page.getByText("Never used")).toBeVisible();
+
+  // It works against the API like a signed-in member.
+  const res = await request.post("http://localhost:8090/api/sync/envelopes", {
+    headers: { Authorization: token },
+    data: { records: [{ external_id: "from-n8n", name: "Made by n8n" }] },
+  });
+  expect((await res.json()).created).toBe(1);
+  await page.reload();
+  await expect(page.getByText(/Used today/)).toBeVisible();
+  await shot(page, "15-api-tokens");
+
+  page.once("dialog", (dlg) => dlg.accept());
+  await page.getByRole("button", { name: "Revoke n8n" }).click();
+  await expect(page.getByText("No tokens yet")).toBeVisible();
+  const after = await request.get("http://localhost:8090/api/collections/envelopes/records", { headers: { Authorization: token } });
+  expect(after.status()).toBe(401);
+});

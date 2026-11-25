@@ -8,5 +8,6 @@ export default [
     route("/debts", "routes/debts.tsx"),
     route("/assets", "routes/assets.tsx"),
     route("/household", "routes/household.tsx"),
+    route("/api-tokens", "routes/api-tokens.tsx"),
   ]),
 ] satisfies RouteConfig;
