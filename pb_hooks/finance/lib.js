@@ -183,6 +183,19 @@ function sameMoney(a, b) {
   return Math.abs(Math.round(a * 100) - Math.round(b * 100)) <= MATCH_TOLERANCE_CENTS;
 }
 
+/** The earner's first uploaded or typed-in paystub after `date`. */
+function nextRealPaystub(app, ownerId, earnerId, date) {
+  const rows = app.findRecordsByFilter(
+    "paystubs",
+    "owner = {:owner} && earner = {:earner} && source != 'repeat' && pay_date > {:date}",
+    "pay_date,created",
+    1,
+    0,
+    { owner: ownerId, earner: earnerId, date: date },
+  );
+  return rows.length ? rows[0] : null;
+}
+
 /** The earner's most recent paystub on or before `date`, ignoring any tied to `excludeTx`. */
 function previousPaystub(app, ownerId, earnerId, date, excludeTx) {
   const rows = app.findRecordsByFilter(
@@ -227,7 +240,13 @@ function matchPaycheck(app, tx) {
   if (tx.get("kind") !== "income" || !tx.get("earner")) return { status: "", template: null };
   const prev = previousPaystub(app, tx.get("owner"), tx.get("earner"), tx.getString("date"), tx.id);
   if (prev && sameMoney(depositOf(prev), tx.getFloat("amount"))) {
-    return { status: "matched", template: prev };
+    return { status: "matched", template: prev, backfill: false };
+  }
+  // An older deposit (imported, or marked as a paycheck later) can match the next
+  // uploaded paystub instead, the same way saving that paystub backfills it.
+  const next = nextRealPaystub(app, tx.get("owner"), tx.get("earner"), tx.getString("date"));
+  if (next && sameMoney(depositOf(next), tx.getFloat("amount"))) {
+    return { status: "matched", template: next, backfill: true };
   }
   return { status: "needs_paystub", template: null };
 }
@@ -299,7 +318,7 @@ function reconcilePaycheck(app, tx) {
   for (const p of linked) app.delete(p);
 
   const result = matchPaycheck(app, tx);
-  if (result.template) repeatPaystub(app, result.template, tx);
+  if (result.template) repeatPaystub(app, result.template, tx, result.backfill);
   setPaystubStatus(app, tx, result.status);
 }
 
@@ -340,9 +359,10 @@ function attachPaystub(app, paystub) {
 }
 
 /**
- * Fills in paychecks from a paystub: every deposit from the same earner that is
- * still waiting for a paystub and within a cent (either way) of this one's check
- * amount gets a copy of it. That covers deposits before the pay date and ones
+ * Fills in paychecks from a paystub: every deposit within a cent (either way) of
+ * this one's check amount that is either waiting for this earner's paystub, or
+ * income with no earner and no envelope (imported from the bank or Goodbudget),
+ * gets a copy of it; the latter also gets this earner. That covers deposits before the pay date and ones
  * after it that landed before the paystub was saved, unless another uploaded or
  * typed-in paystub sits between them. Run after the paystub's lines are saved.
  * Returns how many deposits were filled in.
@@ -352,9 +372,12 @@ function backfillPaystub(app, ownerId, paystubId) {
   try { paystub = app.findRecordById("paystubs", paystubId); } catch (_) { paystub = null; }
   if (!paystub || paystub.get("owner") !== ownerId) throw new NotFoundError("Paystub not found.");
   if (paystub.get("source") === "repeat") return 0;
+  // Deposits waiting for this earner's paystub, plus income with no earner yet
+  // (imported from the bank or another app) that isn't money back into an envelope.
   const waiting = app.findRecordsByFilter(
     "transactions",
-    "owner = {:owner} && earner = {:earner} && kind = 'income' && paystub_status = 'needs_paystub' && id != {:self}",
+    "owner = {:owner} && kind = 'income' && id != {:self} && " +
+      "((earner = {:earner} && paystub_status = 'needs_paystub') || (earner = '' && envelope = ''))",
     "date",
     0,
     0,
@@ -367,6 +390,13 @@ function backfillPaystub(app, ownerId, paystubId) {
     if (paystubsForTransaction(app, tx.id).length > 0) continue;
     const date = tx.getString("date");
     if (date > payDate && newerRealPaystub(app, paystub, date)) continue;
+    if (!tx.get("earner")) {
+      // Same check amount to the cent: it's this earner's paycheck. Set directly so
+      // the transactions hooks don't run the match again.
+      app.db().newQuery("UPDATE transactions SET earner = {:e} WHERE id = {:id}")
+        .bind({ e: paystub.get("earner"), id: tx.id }).execute();
+      tx.set("earner", paystub.get("earner"));
+    }
     repeatPaystub(app, paystub, tx, date < payDate);
     setPaystubStatus(app, tx, "matched");
     filled++;

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  backfillVendor, createVendor, deleteTaxDocument, deleteTransaction, errorMessage, fromPbDate, listTransactionDocuments,
+  backfillVendor, createVendor, deleteTaxDocument, deleteTransaction, errorMessage, fromPbDate, listEarners, listTransactionDocuments,
   taxDocumentUrl, toPbDate, updateTransaction, updateVendor, uploadTaxDocument,
 } from "~/backend/api";
 import {
-  TAX_CATEGORIES, TAX_PAID_BY, type Envelope, type TaxCategory, type TaxDocument, type TaxDocumentKind, type TaxPaidBy,
+  TAX_CATEGORIES, TAX_PAID_BY, type Earner, type Envelope, type TaxCategory, type TaxDocument, type TaxDocumentKind, type TaxPaidBy,
   type Transaction, type Vendor,
 } from "~/backend/types";
 import { ErrorNote, FormActions, Icon, Modal, MoneyInput, Select, TextInput, Toggle, cx } from "~/components/ui";
@@ -44,6 +44,8 @@ export function TransactionDetails({ tx, envelopes, vendors, onClose, onChanged 
   const [person, setPerson] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const [docs, setDocs] = useState<TaxDocument[]>([]);
+  const [earner, setEarner] = useState("");
+  const [earners, setEarners] = useState<Earner[]>([]);
   const [docKind, setDocKind] = useState<TaxDocumentKind>("receipt");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -66,6 +68,8 @@ export function TransactionDetails({ tx, envelopes, vendors, onClose, onChanged 
     setAcknowledged(tx.tax_acknowledged);
     setError(null);
     setDocs([]);
+    setEarner(tx.earner);
+    if (tx.kind === "income") listEarners().then(setEarners).catch(() => setEarners([]));
     listTransactionDocuments(tx.id).then(setDocs).catch(() => setDocs([]));
   }, [tx]);
 
@@ -115,6 +119,7 @@ export function TransactionDetails({ tx, envelopes, vendors, onClose, onChanged 
         tax_year: effective === "ira" ? taxYear : 0,
         tax_person: effective === "ira" ? person.trim() : "",
         tax_acknowledged: effective === "charity" ? acknowledged : false,
+        ...(income ? { earner: envelope ? "" : earner } : {}),
       });
       if (learn && vendorId) await backfillVendor(vendorId);
       onChanged();
@@ -169,7 +174,13 @@ export function TransactionDetails({ tx, envelopes, vendors, onClose, onChanged 
         </div>
         <TextInput label="Statement text" value={payee} onChange={(e) => setPayee(e.target.value)}
           hint={tx.account ? `From ${tx.account}` : "What the bank statement says. Vendors are matched on it."} />
-        {!tx.earner && (
+        {income && !envelope && earners.length > 0 && (
+          <Select label="Whose paycheck?" value={earner} onChange={(e) => setEarner(e.target.value)}
+            hint={earner && earner !== tx.earner ? "It's matched to that earner's paystubs when you save." : undefined}
+            options={[{ value: "", label: "Not a paycheck" },
+              ...earners.filter((e) => !e.archived || e.id === tx.earner).map((e) => ({ value: e.id, label: e.name }))]} />
+        )}
+        {!earner && (
           <Select label="Envelope" value={envelope} onChange={(e) => setEnvelope(e.target.value)}
             options={[{ value: "", label: income ? "None: income for the month" : "No envelope" },
               ...envelopes.filter((e) => !e.archived || e.id === tx.envelope).map((e) => ({ value: e.id, label: `${e.emoji ? e.emoji + " " : ""}${e.name}` }))]} />
