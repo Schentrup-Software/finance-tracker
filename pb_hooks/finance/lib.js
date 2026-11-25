@@ -384,6 +384,10 @@ function syncLinePayment(app, line) {
 //   OPENCLAW_TOKEN  the gateway token or password     (optional: leave it unset when
 //                   OpenClaw sits behind a trusted proxy that handles auth)
 //   OPENCLAW_AGENT  agent id to use (optional; default agent otherwise)
+//   OPENCLAW_USERNAME / OPENCLAW_PASSWORD
+//                   HTTP basic login for a proxy in front of OpenClaw (optional).
+//                   A user:password@ in OPENCLAW_URL works too. Basic auth uses the
+//                   Authorization header, so it replaces OPENCLAW_TOKEN if both are set.
 
 const PAYSTUB_PROMPT = [
   "Read this paystub and reply with ONLY a JSON object, no other text, in this shape:",
@@ -397,9 +401,44 @@ const PAYSTUB_PROMPT = [
 ].join(" ");
 
 function agentConfig() {
-  const url = ($os.getenv("OPENCLAW_URL") || "").replace(/\/+$/, "");
-  const token = $os.getenv("OPENCLAW_TOKEN") || "";
-  return url ? { url: url, token: token, agent: $os.getenv("OPENCLAW_AGENT") || "" } : null;
+  let url = ($os.getenv("OPENCLAW_URL") || "").trim().replace(/\/+$/, "");
+  if (!url) return null;
+  let username = $os.getenv("OPENCLAW_USERNAME") || "";
+  let password = $os.getenv("OPENCLAW_PASSWORD") || "";
+  // Credentials written into the URL (https://user:pass@host) become the basic login.
+  const m = url.match(/^(\w+:\/\/)([^@\/]*)@(.*)$/);
+  if (m) {
+    url = m[1] + m[3];
+    if (!username && !password) {
+      const i = m[2].indexOf(":");
+      username = decodeURIComponent(i === -1 ? m[2] : m[2].slice(0, i));
+      password = i === -1 ? "" : decodeURIComponent(m[2].slice(i + 1));
+    }
+  }
+  return {
+    url: url,
+    token: $os.getenv("OPENCLAW_TOKEN") || "",
+    agent: $os.getenv("OPENCLAW_AGENT") || "",
+    username: username,
+    password: password,
+  };
+}
+
+const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/** Base64 of a string's UTF-8 bytes (the hook runtime has no btoa). */
+function base64Utf8(text) {
+  const bytes = [];
+  const utf8 = unescape(encodeURIComponent(text));
+  for (let i = 0; i < utf8.length; i++) bytes.push(utf8.charCodeAt(i));
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0);
+    out += B64[(n >> 18) & 63] + B64[(n >> 12) & 63];
+    out += i + 1 < bytes.length ? B64[(n >> 6) & 63] : "=";
+    out += i + 2 < bytes.length ? B64[n & 63] : "=";
+  }
+  return out;
 }
 
 /** Pulls the first JSON object out of a model reply. */
@@ -459,7 +498,7 @@ function agentDetails(cfg, requestUrl, extra) {
     url: safeUrl(requestUrl),
     agent: cfg.agent || "(default agent: OPENCLAW_AGENT is empty)",
     model: cfg.agent ? "openclaw/" + cfg.agent : "openclaw",
-    token_sent: !!cfg.token,
+    auth_sent: cfg.username ? "basic (user " + cfg.username + ")" : cfg.token ? "bearer token" : "none",
   };
   for (const k in extra) details[k] = extra[k];
   return JSON.stringify(details, null, 2);
@@ -468,9 +507,9 @@ function agentDetails(cfg, requestUrl, extra) {
 /** A short hint for the person reading the error, based on the status. */
 function agentHint(status, cfg) {
   if (status === 401 || status === 403) {
-    return cfg.token
-      ? " The gateway or a proxy in front of it refused OPENCLAW_TOKEN."
-      : " No OPENCLAW_TOKEN is set, so a proxy in front of OpenClaw may be refusing the server's request.";
+    if (cfg.username) return " The proxy or gateway refused the OPENCLAW_USERNAME / OPENCLAW_PASSWORD login.";
+    if (cfg.token) return " The gateway or a proxy in front of it refused OPENCLAW_TOKEN.";
+    return " No login is set. If a proxy in front of OpenClaw asks for one, set OPENCLAW_USERNAME and OPENCLAW_PASSWORD.";
   }
   if (status === 404) return " Check that the OpenResponses endpoint is turned on in OpenClaw.";
   return "";
@@ -480,7 +519,11 @@ function readPaystubWithAgent(base64, filename, mediaType) {
   const cfg = agentConfig();
   if (!cfg) throw new BadRequestError("No OpenClaw agent is set up for reading paystubs.");
   const headers = { "Content-Type": "application/json" };
-  if (cfg.token) headers.Authorization = "Bearer " + cfg.token;
+  if (cfg.username || cfg.password) {
+    headers.Authorization = "Basic " + base64Utf8(cfg.username + ":" + cfg.password);
+  } else if (cfg.token) {
+    headers.Authorization = "Bearer " + cfg.token;
+  }
   if (cfg.agent) headers["x-openclaw-agent-id"] = cfg.agent;
   const requestUrl = cfg.url + "/v1/responses";
 

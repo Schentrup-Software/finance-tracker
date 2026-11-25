@@ -22,6 +22,8 @@ services:
       # See docs/truenas.md. Remove the # on these two lines to turn it on.
       # OPENCLAW_URL: "http://192.168.1.20:18789"
       # OPENCLAW_TOKEN: "your-gateway-token"   # not needed behind a trusted proxy
+      # OPENCLAW_USERNAME: "proxy-user"        # if a proxy in front of OpenClaw asks for a basic login
+      # OPENCLAW_PASSWORD: "proxy-password"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
       interval: 30s
