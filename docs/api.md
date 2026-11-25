@@ -175,7 +175,7 @@ or not set, the deposit is `net`.
 When an income transaction with an `earner` is created (in the app or through n8n), the
 server compares its `amount` with that earner's most recent paystub's `deposit` (or `net`):
 
-- **Within one cent:** pay, taxes and deductions are assumed unchanged. The server copies
+- **Within one cent, above or below:** pay, taxes and deductions are assumed unchanged. The server copies
   the last paystub and its lines (`source: "repeat"`), dated on the deposit (any one-cent
   difference goes into `net`), and sets the
   transaction's `paystub_status` to `matched`.
@@ -184,13 +184,20 @@ server compares its `amount` with that earner's most recent paystub's `deposit` 
   earner with the same `deposit` (or net pay) within a week of the deposit, it is tied to the deposit and
   the status becomes `matched`.
 
-- **Earlier deposits (backfill):** `POST /api/paystubs/{id}/backfill` copies a paystub to
-  every earlier deposit from the same earner that is still `needs_paystub` and within one
-  cent of its `deposit` (or `net`), the same way a later matching deposit is filled in.
+- **Backfill:** `POST /api/paystubs/{id}/backfill` copies a paystub to every deposit from
+  the same earner that is still `needs_paystub` and within one cent (above or below) of its
+  `deposit` (or `net`). That includes deposits before the pay date, and later ones that
+  landed before the paystub was saved, unless another uploaded or typed-in paystub is
+  dated between them. Income with no `earner` and no `envelope` (imported from the
+  bank or Goodbudget) counts too: when it matches, it gets this paystub's earner.
   It returns `{ "filled": <count> }`. The app calls it after saving a paystub's lines; call
   it from n8n after creating a paystub and its lines. Loan and contribution lines on those
   copies only pay down a debt or raise an asset that was already in the app on the
   deposit's date, since a balance typed in later already includes them.
+
+When a deposit doesn't match the paystub before it, it is also checked against the
+earner's next uploaded or typed-in paystub, so marking an old deposit as someone's
+paycheck fills it in from the paystub that came after it.
 
 Changing a deposit's amount, date or earner runs the check again. Deleting a deposit
 deletes its copied paystub.

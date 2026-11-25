@@ -173,12 +173,27 @@ function adjustDebtBalance(app, debtId, delta) {
 
 // ---------- Paychecks ----------
 
-// A deposit "matches" the earner's last paystub when the take-home pay is
-// within one cent of it. Then taxes and deductions are assumed unchanged.
-const MATCH_TOLERANCE = 0.01;
+// A deposit "matches" the earner's last paystub when it is within one cent of
+// the paystub's check amount, above or below (paychecks drift by a cent from
+// rounding). Then taxes and deductions are assumed unchanged. Compared in whole
+// cents so floating point can't push a one-cent difference over the line.
+const MATCH_TOLERANCE_CENTS = 1;
 
 function sameMoney(a, b) {
-  return Math.abs(a - b) <= MATCH_TOLERANCE + 1e-9;
+  return Math.abs(Math.round(a * 100) - Math.round(b * 100)) <= MATCH_TOLERANCE_CENTS;
+}
+
+/** The earner's first uploaded or typed-in paystub after `date`. */
+function nextRealPaystub(app, ownerId, earnerId, date) {
+  const rows = app.findRecordsByFilter(
+    "paystubs",
+    "owner = {:owner} && earner = {:earner} && source != 'repeat' && pay_date > {:date}",
+    "pay_date,created",
+    1,
+    0,
+    { owner: ownerId, earner: earnerId, date: date },
+  );
+  return rows.length ? rows[0] : null;
 }
 
 /** The earner's most recent paystub on or before `date`, ignoring any tied to `excludeTx`. */
@@ -225,7 +240,13 @@ function matchPaycheck(app, tx) {
   if (tx.get("kind") !== "income" || !tx.get("earner")) return { status: "", template: null };
   const prev = previousPaystub(app, tx.get("owner"), tx.get("earner"), tx.getString("date"), tx.id);
   if (prev && sameMoney(depositOf(prev), tx.getFloat("amount"))) {
-    return { status: "matched", template: prev };
+    return { status: "matched", template: prev, backfill: false };
+  }
+  // An older deposit (imported, or marked as a paycheck later) can match the next
+  // uploaded paystub instead, the same way saving that paystub backfills it.
+  const next = nextRealPaystub(app, tx.get("owner"), tx.get("earner"), tx.getString("date"));
+  if (next && sameMoney(depositOf(next), tx.getFloat("amount"))) {
+    return { status: "matched", template: next, backfill: true };
   }
   return { status: "needs_paystub", template: null };
 }
@@ -297,7 +318,7 @@ function reconcilePaycheck(app, tx) {
   for (const p of linked) app.delete(p);
 
   const result = matchPaycheck(app, tx);
-  if (result.template) repeatPaystub(app, result.template, tx);
+  if (result.template) repeatPaystub(app, result.template, tx, result.backfill);
   setPaystubStatus(app, tx, result.status);
 }
 
@@ -338,34 +359,61 @@ function attachPaystub(app, paystub) {
 }
 
 /**
- * Fills in earlier paychecks from a paystub: every deposit from the same earner,
- * paid before this paystub's pay date, still waiting for a paystub and within a
- * cent of this one's check amount gets a copy of it, the same way a later
- * matching deposit does. Run after the paystub's lines are saved. Returns how
- * many deposits were filled in.
+ * Fills in paychecks from a paystub: every deposit within a cent (either way) of
+ * this one's check amount that is either waiting for this earner's paystub, or
+ * income with no earner and no envelope (imported from the bank or Goodbudget),
+ * gets a copy of it; the latter also gets this earner. That covers deposits before the pay date and ones
+ * after it that landed before the paystub was saved, unless another uploaded or
+ * typed-in paystub sits between them. Run after the paystub's lines are saved.
+ * Returns how many deposits were filled in.
  */
 function backfillPaystub(app, ownerId, paystubId) {
   let paystub;
   try { paystub = app.findRecordById("paystubs", paystubId); } catch (_) { paystub = null; }
   if (!paystub || paystub.get("owner") !== ownerId) throw new NotFoundError("Paystub not found.");
   if (paystub.get("source") === "repeat") return 0;
+  // Deposits waiting for this earner's paystub, plus income with no earner yet
+  // (imported from the bank or another app) that isn't money back into an envelope.
   const waiting = app.findRecordsByFilter(
     "transactions",
-    "owner = {:owner} && earner = {:earner} && kind = 'income' && paystub_status = 'needs_paystub' && date < {:before} && id != {:self}",
+    "owner = {:owner} && kind = 'income' && id != {:self} && " +
+      "((earner = {:earner} && paystub_status = 'needs_paystub') || (earner = '' && envelope = ''))",
     "date",
     0,
     0,
-    { owner: ownerId, earner: paystub.get("earner"), before: paystub.getString("pay_date"), self: paystub.get("transaction") || "" },
+    { owner: ownerId, earner: paystub.get("earner"), self: paystub.get("transaction") || "" },
   );
+  const payDate = paystub.getString("pay_date");
   let filled = 0;
   for (const tx of waiting) {
     if (!sameMoney(tx.getFloat("amount"), depositOf(paystub))) continue;
     if (paystubsForTransaction(app, tx.id).length > 0) continue;
-    repeatPaystub(app, paystub, tx, true);
+    const date = tx.getString("date");
+    if (date > payDate && newerRealPaystub(app, paystub, date)) continue;
+    if (!tx.get("earner")) {
+      // Same check amount to the cent: it's this earner's paycheck. Set directly so
+      // the transactions hooks don't run the match again.
+      app.db().newQuery("UPDATE transactions SET earner = {:e} WHERE id = {:id}")
+        .bind({ e: paystub.get("earner"), id: tx.id }).execute();
+      tx.set("earner", paystub.get("earner"));
+    }
+    repeatPaystub(app, paystub, tx, date < payDate);
     setPaystubStatus(app, tx, "matched");
     filled++;
   }
   return filled;
+}
+
+/** True when the earner has an uploaded or typed-in paystub after `paystub` and on or before `date`. */
+function newerRealPaystub(app, paystub, date) {
+  return app.findRecordsByFilter(
+    "paystubs",
+    "owner = {:owner} && earner = {:earner} && source != 'repeat' && id != {:id} && pay_date > {:from} && pay_date <= {:to}",
+    "",
+    1,
+    0,
+    { owner: paystub.get("owner"), earner: paystub.get("earner"), id: paystub.id, from: paystub.getString("pay_date"), to: date },
+  ).length > 0;
 }
 
 /** When a paystub linked to a deposit goes away, the deposit needs one again. */

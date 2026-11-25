@@ -128,16 +128,26 @@ E5=$(j -H "$A" -X POST "$B/api/collections/earners/records" -d '{"name":"Kim"}' 
 D8=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E5\",\"amount\":1500,\"date\":\"2026-10-16 12:00:00.000Z\"}" | field '["id"]')
 D9=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E5\",\"amount\":1500.01,\"date\":\"2026-10-30 12:00:00.000Z\"}" | field '["id"]')
 D10=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E5\",\"amount\":1400,\"date\":\"2026-10-02 12:00:00.000Z\"}" | field '["id"]')
+D11=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E5\",\"amount\":1499.99,\"date\":\"2026-11-27 12:00:00.000Z\"}" | field '["id"]')
+D12=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d '{"kind":"income","payee":"Gusto","amount":1500.01,"date":"2026-09-30 12:00:00.000Z"}' | field '["id"]')
+D13=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"payee\":\"Refund\",\"envelope\":\"$ENV\",\"amount\":1500,\"date\":\"2026-09-30 12:00:00.000Z\"}" | field '["id"]')
 LOAN2=$(j -H "$A" -X POST "$B/api/collections/debts/records" -d '{"name":"Kim 401k loan","type":"401k_loan","balance":3000}' | field '["id"]')
 S5=$(j -H "$A" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\":\"$E5\",\"pay_date\":\"2026-11-13 12:00:00.000Z\",\"gross\":2000,\"net\":1500,\"source\":\"upload\"}" | field '["id"]')
 j -H "$A" -X POST "$B/api/collections/paystub_lines/records" -d "{\"paystub\":\"$S5\",\"category\":\"401k_loan\",\"amount\":100,\"debt\":\"$LOAN2\"}" > /dev/null
 check "another household can't backfill my paystub" "$(j -H "$OTHER" -X POST "$B/api/paystubs/$S5/backfill" | field '["status"]')" "404"
-check "backfill fills in the two matching earlier deposits" "$(j -H "$A" -X POST "$B/api/paystubs/$S5/backfill" | field '["filled"]')" "2"
+check "backfill fills in the matching deposits before and after, a cent either way" "$(j -H "$A" -X POST "$B/api/paystubs/$S5/backfill" | field '["filled"]')" "4"
 check "the earlier deposit is matched" "$(status_of "$D8")" "matched"
 check "the one a cent off is matched too" "$(status_of "$D9")" "matched"
+check "a later deposit a cent under is matched too" "$(status_of "$D11")" "matched"
+check "an imported paycheck with no earner is matched" "$(status_of "$D12")" "matched"
+check "and gets the earner" "$(j -H "$A" "$B/api/collections/transactions/records/$D12" | field '["earner"]')" "$E5"
+check "money back into an envelope is left alone" "$(j -H "$A" "$B/api/collections/transactions/records/$D13" | field '["earner"]')" ""
 check "a different amount still asks for a paystub" "$(status_of "$D10")" "needs_paystub"
-check "backfilled lines don't pay a loan added after those paychecks" "$(balance_of "$LOAN2")" "2900"
+check "only the later paycheck pays the loan added after the earlier ones" "$(balance_of "$LOAN2")" "2800"
 check "backfilling again finds nothing new" "$(j -H "$A" -X POST "$B/api/paystubs/$S5/backfill" | field '["filled"]')" "0"
+D14=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d '{"kind":"income","payee":"Gusto","amount":1500,"date":"2026-09-16 12:00:00.000Z"}' | field '["id"]')
+j -H "$A" -X PATCH "$B/api/collections/transactions/records/$D14" -d "{\"earner\":\"$E5\"}" > /dev/null
+check "marking an old deposit as a paycheck matches the next paystub" "$(status_of "$D14")" "matched"
 
 # Annual envelopes, imported months and opening balances
 carried_of() { j -H "$A" "$B/api/finance/balances?month=$1" | field "[\"carried\"][\"$2\"]"; }
