@@ -415,6 +415,11 @@ export interface PaycheckData {
   year: { paystubs: Paystub[]; lines: PaystubLine[] };
 }
 
+/** Paycheck deposits (any month) still waiting for a paystub. */
+export function listWaitingDeposits(): Promise<Transaction[]> {
+  return list<Transaction>("transactions", { filter: "paystub_status = 'needs_paystub'", sort: "-date" });
+}
+
 export async function loadPaychecks(month: string): Promise<PaycheckData> {
   const { start, end } = monthRange(month);
   const y = Number(month.slice(0, 4));
@@ -425,7 +430,7 @@ export async function loadPaychecks(month: string): Promise<PaycheckData> {
     list<PaystubLine>("paystub_lines", {
       filter: pb.filter("paystub.pay_date >= {:s} && paystub.pay_date < {:e}", { s: start, e: end }), sort: "sort,created",
     }),
-    list<Transaction>("transactions", { filter: "paystub_status = 'needs_paystub'", sort: "-date" }),
+    listWaitingDeposits(),
     list<Paystub>("paystubs", { filter: pb.filter("pay_date >= {:s} && pay_date < {:e}", { s: ys, e: ye }) }),
     list<PaystubLine>("paystub_lines", { filter: pb.filter("paystub.pay_date >= {:s} && paystub.pay_date < {:e}", { s: ys, e: ye }) }),
   ]);

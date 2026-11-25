@@ -55,6 +55,7 @@ test("budget: start a month with starter envelopes, fund and spend", async ({ pa
   await dialog.getByRole("button", { name: "Close" }).click();
 
   await expect(page.getByRole("button", { name: /^Groceries: \$479\.55 left of \$600/ })).toBeVisible();
+  await page.getByRole("tab", { name: /Income/ }).click();
   await expect(page.getByText("$4,400").first()).toBeVisible(); // left to budget
 
   await page.getByRole("button", { name: "Income", exact: true }).click();
@@ -140,6 +141,7 @@ test("paychecks: read a PDF paystub, then match the next paycheck to the cent", 
   await expect(page.getByRole("heading", { name: "Paid from your paycheck" })).toBeVisible();
 
   await page.getByRole("link", { name: /Budget/ }).click();
+  await page.getByRole("tab", { name: /Income/ }).click();
   await page.getByRole("button", { name: "Add an earner" }).click();
   d = page.getByRole("dialog");
   await d.getByLabel("Name").fill("Joey");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Allocation, Envelope, Transaction } from "~/backend/types";
-import { monthlyToGoal, summarize } from "~/lib/budget";
+import { monthLeftShare, monthlyToGoal, summarize } from "~/lib/budget";
 import { interestLeft, paidShare, payoffMonths } from "~/lib/debts";
 import { equity, netWorth, groupFor } from "~/lib/assets";
 import { nextMonth, monthRange } from "~/lib/dates";
@@ -128,5 +128,19 @@ describe("helpers", () => {
   it("money parsing", () => {
     expect(parseMoney("$1,234.567")).toBe(1234.57);
     expect(parseMoney("")).toBe(0);
+  });
+});
+
+describe("monthLeftShare", () => {
+  const nov25 = new Date(2026, 10, 25);
+  it("is the share of the month still to come", () => {
+    expect(monthLeftShare("2026-11", nov25)).toBeCloseTo(5 / 30);
+    expect(monthLeftShare("2026-11", new Date(2026, 10, 30))).toBe(0);
+  });
+  it("is 0 for past months and 1 for future ones", () => {
+    expect(monthLeftShare("2026-10", nov25)).toBe(0);
+    expect(monthLeftShare("2025-12", nov25)).toBe(0);
+    expect(monthLeftShare("2026-12", nov25)).toBe(1);
+    expect(monthLeftShare("2027-01", nov25)).toBe(1);
   });
 });
