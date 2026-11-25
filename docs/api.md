@@ -186,6 +186,10 @@ with the file as an `input_file` part. Set these on the container:
 | `OPENCLAW_TOKEN` | Optional gateway token or password, sent as `Authorization: Bearer …`. Leave it unset when OpenClaw is behind a trusted proxy that handles auth |
 | `OPENCLAW_AGENT` | Optional agent id; the default agent otherwise |
 
+When the agent can't be reached or answers with an error, the call returns `400` with a
+short message, and the PocketBase request log entry's `details` hold the URL, agent, status,
+response headers and the first 2,000 characters of the response body (secrets redacted).
+
 On the OpenClaw side, turn on the endpoint with `gateway.http.endpoints.responses.enabled: true`.
 Its default file limit is 5 MB (`gateway.http.endpoints.responses.files.maxBytes`), and
 `application/pdf` is allowed by default. Keep the gateway on your private network: its

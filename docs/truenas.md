@@ -116,6 +116,15 @@ hand the file to an OpenClaw agent you run:
 The paystub goes only to your own gateway, and from there to whatever model that agent
 uses. Keep the gateway on your private network.
 
+If reading fails (for example "The OpenClaw agent answered with HTTP 403."), open the
+PocketBase dashboard → **Logs** and click the `POST /api/paystubs/read` entry. Its
+`details` show the URL called, the agent, whether a token was sent, and the gateway's
+status, response headers and the start of its response body (no tokens or cookies). A 401
+or 403 with no token usually means a proxy in front of OpenClaw is refusing the server:
+the server calls `OPENCLAW_URL` directly, without your browser's sign-in, so let the
+TrueNAS host through the proxy, point `OPENCLAW_URL` at the gateway itself, or set
+`OPENCLAW_TOKEN`.
+
 ## Updating
 
 Every push to `main` publishes a new `latest` image. In TrueNAS: **Apps** →

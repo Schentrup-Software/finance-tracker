@@ -422,46 +422,123 @@ function responseText(body) {
   return parts.join("\n");
 }
 
+// Response headers that can carry secrets; their values are left out of logs.
+const SECRET_HEADERS = ["set-cookie", "authorization", "proxy-authorization", "cookie", "x-api-key"];
+const LOG_BODY_LIMIT = 2000;
+
+/** The URL with any user:password@ taken out, so it is safe to log. */
+function safeUrl(url) {
+  return String(url).replace(/^(\w+:\/\/)[^@\/]*@/, "$1");
+}
+
+/** A response's headers as { name: "value" }, with secret ones redacted. */
+function safeHeaders(headers) {
+  const out = {};
+  if (!headers) return out;
+  for (const name in headers) {
+    const v = headers[name];
+    const value = Array.isArray(v) ? v.join(", ") : String(v);
+    out[name] = SECRET_HEADERS.indexOf(String(name).toLowerCase()) === -1 ? value : "(redacted)";
+  }
+  return out;
+}
+
+function truncate(text, limit) {
+  text = text || "";
+  return text.length > limit ? text.slice(0, limit) + "… (" + text.length + " chars)" : text;
+}
+
+/**
+ * What went wrong talking to the agent, for the PocketBase logs. It is passed as
+ * the error's data, which PocketBase shows as `details` on the request log entry.
+ * It is a JSON string, not an object: PocketBase would echo an object's keys back
+ * to the browser as validation errors. The token is never included.
+ */
+function agentDetails(cfg, requestUrl, extra) {
+  const details = {
+    url: safeUrl(requestUrl),
+    agent: cfg.agent || "(default agent: OPENCLAW_AGENT is empty)",
+    model: cfg.agent ? "openclaw/" + cfg.agent : "openclaw",
+    token_sent: !!cfg.token,
+  };
+  for (const k in extra) details[k] = extra[k];
+  return JSON.stringify(details, null, 2);
+}
+
+/** A short hint for the person reading the error, based on the status. */
+function agentHint(status, cfg) {
+  if (status === 401 || status === 403) {
+    return cfg.token
+      ? " The gateway or a proxy in front of it refused OPENCLAW_TOKEN."
+      : " No OPENCLAW_TOKEN is set, so a proxy in front of OpenClaw may be refusing the server's request.";
+  }
+  if (status === 404) return " Check that the OpenResponses endpoint is turned on in OpenClaw.";
+  return "";
+}
+
 function readPaystubWithAgent(base64, filename, mediaType) {
   const cfg = agentConfig();
   if (!cfg) throw new BadRequestError("No OpenClaw agent is set up for reading paystubs.");
   const headers = { "Content-Type": "application/json" };
   if (cfg.token) headers.Authorization = "Bearer " + cfg.token;
   if (cfg.agent) headers["x-openclaw-agent-id"] = cfg.agent;
+  const requestUrl = cfg.url + "/v1/responses";
 
-  const res = $http.send({
-    url: cfg.url + "/v1/responses",
-    method: "POST",
-    headers: headers,
-    timeout: 120,
-    body: JSON.stringify({
-      model: cfg.agent ? "openclaw/" + cfg.agent : "openclaw",
-      input: [
-        {
-          type: "message",
-          role: "user",
-          content: [
-            {
-              type: "input_file",
-              source: { type: "base64", media_type: mediaType || "application/pdf", data: base64, filename: filename || "paystub.pdf" },
-            },
-            { type: "input_text", text: PAYSTUB_PROMPT },
-          ],
-        },
-      ],
-    }),
-  });
+  let res;
+  try {
+    res = $http.send({
+      url: requestUrl,
+      method: "POST",
+      headers: headers,
+      timeout: 120,
+      body: JSON.stringify({
+        model: cfg.agent ? "openclaw/" + cfg.agent : "openclaw",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_file",
+                source: { type: "base64", media_type: mediaType || "application/pdf", data: base64, filename: filename || "paystub.pdf" },
+              },
+              { type: "input_text", text: PAYSTUB_PROMPT },
+            ],
+          },
+        ],
+      }),
+    });
+  } catch (err) {
+    throw new BadRequestError(
+      "Couldn't reach the OpenClaw agent at " + safeUrl(cfg.url) + ".",
+      agentDetails(cfg, requestUrl, { cause: String(err) }),
+    );
+  }
+
+  let raw = "";
+  try { raw = toString(res.body); } catch (_) { raw = ""; }
+
   if (res.statusCode < 200 || res.statusCode >= 300) {
-    throw new BadRequestError("The OpenClaw agent answered with HTTP " + res.statusCode + ".");
+    throw new BadRequestError(
+      "The OpenClaw agent answered with HTTP " + res.statusCode + "." + agentHint(res.statusCode, cfg),
+      agentDetails(cfg, requestUrl, {
+        status: res.statusCode,
+        response_headers: safeHeaders(res.headers),
+        response_body: truncate(raw, LOG_BODY_LIMIT),
+      }),
+    );
   }
   let body = res.json;
   if (!body) {
-    try { body = JSON.parse(toString(res.body)); } catch (_) { body = null; }
+    try { body = JSON.parse(raw); } catch (_) { body = null; }
   }
   try {
     return parseAgentJson(responseText(body));
   } catch (_) {
-    throw new BadRequestError("The OpenClaw agent's reply wasn't a paystub.");
+    throw new BadRequestError(
+      "The OpenClaw agent's reply wasn't a paystub.",
+      agentDetails(cfg, requestUrl, { status: res.statusCode, response_body: truncate(raw, LOG_BODY_LIMIT) }),
+    );
   }
 }
 
