@@ -219,6 +219,7 @@ with the file as an `input_file` part. Set these on the container:
 | `OPENCLAW_URL` | Gateway URL, e.g. `http://192.168.1.20:18789` |
 | `OPENCLAW_TOKEN` | Optional gateway token or password, sent as `Authorization: Bearer …`. Leave it unset when OpenClaw is behind a trusted proxy that handles auth |
 | `OPENCLAW_AGENT` | Optional agent id; the default agent otherwise |
+| `OPENCLAW_USERNAME` / `OPENCLAW_PASSWORD` | Optional HTTP basic login, for a proxy in front of OpenClaw that asks for one. `https://user:pass@host` in `OPENCLAW_URL` works too. Sent as `Authorization: Basic …`, so it takes the place of `OPENCLAW_TOKEN` if both are set. Never logged |
 
 When the agent can't be reached or answers with an error, the call returns `400` with a
 short message, and the PocketBase request log entry's `details` hold the URL, agent, status,

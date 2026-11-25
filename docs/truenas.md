@@ -109,6 +109,9 @@ hand the file to an OpenClaw agent you run:
          OPENCLAW_URL: "http://<openclaw-host>:18789"
          OPENCLAW_TOKEN: "<gateway token>"  # leave out if a trusted proxy handles auth
          # OPENCLAW_AGENT: "<agent id>"   # optional; default agent otherwise
+         # If a proxy in front of OpenClaw asks for a basic login (a browser password popup):
+         # OPENCLAW_USERNAME: "<proxy user>"
+         # OPENCLAW_PASSWORD: "<proxy password>"
    ```
 
 3. Save. The paystub screen then says it can fall back to your OpenClaw agent.
@@ -119,11 +122,12 @@ uses. Keep the gateway on your private network.
 If reading fails (for example "The OpenClaw agent answered with HTTP 403."), open the
 PocketBase dashboard → **Logs** and click the `POST /api/paystubs/read` entry. Its
 `details` show the URL called, the agent, whether a token was sent, and the gateway's
-status, response headers and the start of its response body (no tokens or cookies). A 401
-or 403 with no token usually means a proxy in front of OpenClaw is refusing the server:
-the server calls `OPENCLAW_URL` directly, without your browser's sign-in, so let the
-TrueNAS host through the proxy, point `OPENCLAW_URL` at the gateway itself, or set
-`OPENCLAW_TOKEN`.
+status, response headers and the start of its response body (no passwords, tokens or
+cookies). A 401 or 403 with no login set usually means a proxy in front of OpenClaw is
+refusing the server: the server calls `OPENCLAW_URL` directly, without your browser's
+sign-in. If the proxy asks for a basic login, set `OPENCLAW_USERNAME` and
+`OPENCLAW_PASSWORD`. Otherwise let the TrueNAS host through the proxy, point
+`OPENCLAW_URL` at the gateway itself, or set `OPENCLAW_TOKEN`.
 
 ## Updating
 
