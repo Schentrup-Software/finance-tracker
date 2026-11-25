@@ -1,8 +1,14 @@
 import { useMemo, useState } from "react";
-import { errorMessage, importBudgets, listEnvelopes, syncRecords, toPbDate, updateEnvelope } from "~/backend/api";
-import { COLORS, type Envelope } from "~/backend/types";
+import {
+  errorMessage, importBudgets, listAssets, listDebts, listEnvelopes, syncRecords, toPbDate, updateAsset, updateDebt,
+  updateEnvelope,
+} from "~/backend/api";
+import { COLORS, type Asset, type Debt, type Envelope } from "~/backend/types";
 import { ErrorNote, Modal, cx } from "~/components/ui";
-import { envelopeExternalId, guessEnvelopeStyle, parseCsv, planImport, type ImportPlan } from "~/lib/importer";
+import {
+  accountExternalId, envelopeExternalId, guessEnvelopeStyle, parseCsv, planImport,
+  type AccountKind, type FoundAccount, type ImportPlan,
+} from "~/lib/importer";
 import { shortDate } from "~/lib/dates";
 import { money, parseMoney } from "~/lib/money";
 
@@ -18,6 +24,23 @@ interface EnvelopeChoice {
   active: boolean;
 }
 
+interface AccountChoice {
+  found: FoundAccount;
+  kind: AccountKind | "skip";
+  /** What's already in the app under this name: a bank account (asset) or a card (debt). */
+  asset: Asset | null;
+  debt: Debt | null;
+  balance: string;
+}
+
+const ACCOUNT_KINDS: { value: AccountKind | "skip"; label: string }[] = [
+  { value: "checking", label: "Checking" },
+  { value: "savings", label: "Savings" },
+  { value: "credit_card", label: "Credit card" },
+  { value: "cash", label: "Cash" },
+  { value: "skip", label: "Skip" },
+];
+
 const LOOKS_ANNUAL = /christmas|holiday|annual|yearly|birthday/i;
 
 /** Imports a transaction history spreadsheet (CSV), e.g. a Goodbudget export. */
@@ -25,6 +48,7 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
   const [plan, setPlan] = useState<ImportPlan | null>(null);
   const [fileName, setFileName] = useState("");
   const [choices, setChoices] = useState<EnvelopeChoice[]>([]);
+  const [accounts, setAccounts] = useState<AccountChoice[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -33,6 +57,7 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
     setPlan(null);
     setFileName("");
     setChoices([]);
+    setAccounts([]);
     setError(null);
     setProgress(null);
     setDone(null);
@@ -46,7 +71,19 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
       if (/\.xlsx?$/i.test(file.name)) throw new Error("Save the spreadsheet as CSV first (File → Save As → CSV), then pick that file.");
       const p = planImport(parseCsv(await file.text()));
       if (p.transactions.length === 0) throw new Error("No transactions were found in that file.");
-      const existing = await listEnvelopes();
+      const [existing, assets, debts] = await Promise.all([listEnvelopes(), listAssets(), listDebts()]);
+      const find = <T extends { name: string; external_id: string }>(list: T[], name: string) =>
+        list.find((r) => r.external_id === accountExternalId(name)) ??
+        list.find((r) => r.name.trim().toLowerCase() === name.toLowerCase()) ?? null;
+      setAccounts(p.accounts.map((a) => {
+        const asset = find(assets, a.name);
+        const debt = find(debts, a.name);
+        // What's already in the app wins over the guess.
+        const kind = debt && !asset ? "credit_card"
+          : asset && !debt && ["checking", "savings", "cash"].includes(asset.type) ? asset.type as AccountKind
+          : a.type;
+        return { found: a, kind, asset, debt, balance: "" };
+      }));
       const byName = new Map(existing.map((e) => [e.name.trim().toLowerCase(), e]));
       const yearAgo = `${Number(p.lastDate.slice(0, 4)) - 1}${p.lastDate.slice(4)}`;
       setChoices(p.envelopes.map((f) => {
@@ -69,12 +106,44 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
 
   const change = (i: number, patch: Partial<EnvelopeChoice>) =>
     setChoices((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
+  const changeAccount = (i: number, patch: Partial<AccountChoice>) =>
+    setAccounts((as) => as.map((a, j) => (j === i ? { ...a, ...patch } : a)));
 
   async function runImport() {
     if (!plan) return;
     setError(null);
     try {
       const openingDate = `${plan.lastDate} 23:59:59.999Z`;
+      setProgress("Setting up accounts…");
+      const lastDay = toPbDate(plan.lastDate);
+      // Bank accounts are assets and cards are debts. Each gets an id to match on.
+      const assetIds = new Map<string, string>();
+      const debtIds = new Map<string, string>();
+      const assetRecords: object[] = [];
+      const debtRecords: object[] = [];
+      const finalBalances: object[] = [];
+      for (const a of accounts) {
+        if (a.kind === "skip") continue;
+        const name = a.found.name;
+        const typed = a.balance === "" ? null : parseMoney(a.balance);
+        if (a.kind === "credit_card") {
+          const ext = a.debt?.external_id || accountExternalId(name);
+          if (a.debt && !a.debt.external_id) await updateDebt(a.debt.id, { external_id: ext });
+          if (!a.debt) debtRecords.push({ external_id: ext, name, type: "credit_card", balance: 0 });
+          // Card payments below lower the balance; this puts it back where it belongs.
+          finalBalances.push({ external_id: ext, balance: typed ?? a.debt?.balance ?? 0 });
+          debtIds.set(name, ext);
+        } else {
+          const ext = a.asset?.external_id || accountExternalId(name);
+          if (a.asset && !a.asset.external_id) await updateAsset(a.asset.id, { external_id: ext });
+          if (!a.asset) assetRecords.push({ external_id: ext, name, type: a.kind, value: typed ?? 0, as_of: lastDay });
+          else if (typed !== null) assetRecords.push({ external_id: ext, value: typed, as_of: lastDay });
+          assetIds.set(name, ext);
+        }
+      }
+      if (assetRecords.length) await syncRecords("assets", assetRecords);
+      if (debtRecords.length) await syncRecords("debts", debtRecords);
+
       setProgress("Setting up envelopes…");
       // Envelopes already in the app keep their settings; they only get an id to match on.
       const ids = new Map<string, string>();
@@ -106,11 +175,28 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
       await syncRecords("transactions", plan.transactions.map((t) => ({
         external_id: t.external_id, kind: t.kind, date: toPbDate(t.date), amount: t.amount,
         payee: t.payee, note: t.note, account: t.account,
+        ...(assetIds.has(t.account) ? { account_asset_external_id: assetIds.get(t.account) } : { account_asset: "" }),
+        ...(debtIds.has(t.account) ? { account_debt_external_id: debtIds.get(t.account) } : { account_debt: "" }),
         ...(t.envelope ? { envelope_external_id: ids.get(t.envelope) } : { envelope: "" }),
       })), (n) => setProgress(`Adding transactions: ${n.toLocaleString()} of ${total.toLocaleString()}`));
 
+      // Money moved into a card is a payment on it, from the account that paid.
+      const payments = plan.transfers.filter((t) => debtIds.has(t.to)).map((t) => ({
+        external_id: t.external_id, debt_external_id: debtIds.get(t.to), date: toPbDate(t.date), amount: t.amount,
+        note: [t.payee, t.note].filter(Boolean).join(" · "),
+        ...(assetIds.has(t.from) ? { from_asset_external_id: assetIds.get(t.from) } : { from_asset: "" }),
+      }));
+      if (payments.length) {
+        setProgress("Adding card payments…");
+        await syncRecords("debt_payments", payments);
+      }
+      if (finalBalances.length) await syncRecords("debts", finalBalances);
+
       setProgress(null);
-      setDone(`Imported ${total.toLocaleString()} transactions and ${choices.length} envelopes. Importing the same file again won't make duplicates.`);
+      const made = assetIds.size + debtIds.size;
+      setDone(`Imported ${total.toLocaleString()} transactions, ${choices.length} envelopes` +
+        (made ? `, ${made} account${made === 1 ? "" : "s"} and ${payments.length} card payment${payments.length === 1 ? "" : "s"}` : "") +
+        ". Importing the same file again won't make duplicates.");
       onDone();
     } catch (err) {
       setProgress(null);
@@ -151,7 +237,8 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
             </div>
             <div className="mt-1 opacity-80">
               {plan.months.length} months · {money(income)} of income
-              {plan.skipped.accountMoves > 0 && <> · {plan.skipped.accountMoves} account transfers and card payments skipped</>}
+              {plan.transfers.length > 0 && <> · {plan.transfers.length} transfer{plan.transfers.length === 1 ? "" : "s"} between accounts</>}
+              {plan.skipped.accountMoves > 0 && <> · {plan.skipped.accountMoves} one-sided account moves skipped</>}
               {plan.skipped.adjustments > 0 && <> · {plan.skipped.adjustments} balance adjustments skipped</>}
             </div>
             {plan.problems.length > 0 && (
@@ -160,6 +247,53 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
               </div>
             )}
           </div>
+
+          {accounts.length > 0 && (
+            <div>
+              <div className="font-black">Accounts</div>
+              <p className="text-sm font-semibold opacity-80">
+                Checking, savings and cash accounts go on Assets, and credit cards on Debts. Transfers from an account
+                into a card become payments on the card. Check each guess, and enter what the account held
+                (or what the card owed) on {shortDate(plan.lastDate)}.
+              </p>
+              <ul className="mt-3 space-y-2">
+                {accounts.map((a, i) => {
+                  const card = a.kind === "credit_card";
+                  const existing = card ? a.debt : a.kind === "skip" ? null : a.asset;
+                  return (
+                    <li key={a.found.name} className={cx("rounded-2xl bg-white/70 p-3", a.kind === "skip" && "opacity-60")}>
+                      <div className="min-w-0">
+                        <span className="font-black">{a.found.name}</span>
+                        <span className="ml-2 text-xs font-bold opacity-70">
+                          {a.found.count} entries · {a.found.reason}
+                          {existing && " · already in the app"}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-[auto_1fr]">
+                        <div className="flex flex-wrap rounded-3xl bg-white p-1 text-sm font-black" role="radiogroup" aria-label={`${a.found.name} kind`}>
+                          {ACCOUNT_KINDS.map((k) => (
+                            <button key={k.value} type="button" role="radio" aria-checked={a.kind === k.value}
+                              onClick={() => changeAccount(i, { kind: k.value })}
+                              className={cx("flex-1 whitespace-nowrap rounded-full px-3 py-1", a.kind === k.value ? "c-sky" : "opacity-60")}
+                              style={a.kind === k.value ? { background: "var(--c)" } : undefined}>
+                              {k.label}
+                            </button>
+                          ))}
+                        </div>
+                        {a.kind !== "skip" && (
+                          <SmallMoney label={card ? `${a.found.name} owed` : `${a.found.name} balance`}
+                            placeholder={existing
+                              ? `Keep ${money(card ? a.debt!.balance : a.asset!.value)}`
+                              : `${card ? "Owed" : "Balance"} ${shortDate(plan.lastDate)}`}
+                            allowNegative={!card} value={a.balance} onChange={(v) => changeAccount(i, { balance: v })} />
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
 
           <div>
             <div className="font-black">Envelopes</div>

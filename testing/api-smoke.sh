@@ -57,6 +57,21 @@ check "sync updates on re-run" "$(j -H "$A" -X POST "$B/api/sync/transactions" \
 check "sync rejects unknown fields" "$(j -H "$A" -X POST "$B/api/sync/transactions" -d '{"records":[{"external_id":"z","bogus":1}]}' | field '["status"]')" "400"
 check "sync can't reach another user's records" "$(j -H "$OTHER" -X POST "$B/api/sync/transactions" \
   -d '{"records":[{"external_id":"z","kind":"expense","envelope_external_id":"env-gas","date":"2026-11-21","amount":5}]}' | field '["status"]')" "400"
+# Accounts: a transaction links to its checking account (asset) or card (debt).
+j -H "$A" -X POST "$B/api/sync/assets" -d '{"records":[{"external_id":"acct-chk","name":"Checking","type":"checking","value":100}]}' > /dev/null
+j -H "$A" -X POST "$B/api/sync/debts" -d '{"records":[{"external_id":"acct-visa","name":"Visa card","type":"credit_card","balance":300}]}' > /dev/null
+TXA=$(j -H "$A" -X POST "$B/api/sync/transactions" \
+  -d '{"records":[{"external_id":"tx-acct","kind":"expense","account":"Visa card","account_debt_external_id":"acct-visa","date":"2026-11-21","amount":9}]}' | field '["records"][0]["account_debt"]')
+check "sync links a transaction to its card" "$([ -n "$TXA" ] && echo yes)" "yes"
+check "card payment names the account it came from" "$(j -H "$A" -X POST "$B/api/sync/debt_payments" \
+  -d '{"records":[{"external_id":"pay-acct","debt_external_id":"acct-visa","from_asset_external_id":"acct-chk","date":"2026-11-21","amount":50}]}' | field '["created"]')" "1"
+CHK=$(j -H "$A" "$B/api/collections/assets/records?filter=external_id='acct-chk'" | field '["items"][0]["id"]')
+check "another user can't link my account to their transaction" \
+  "$(j -H "$OTHER" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"expense\",\"account_asset\":\"$CHK\",\"date\":\"2026-11-21\",\"amount\":5}" | field '["status"]')" "400"
+j -H "$OTHER" -X POST "$B/api/sync/debts" -d '{"records":[{"external_id":"their-card","name":"Card","balance":10}]}' > /dev/null
+check "another user can't pay their debt from my account" \
+  "$(j -H "$OTHER" -X POST "$B/api/sync/debt_payments" -d "{\"records\":[{\"external_id\":\"p\",\"debt_external_id\":\"their-card\",\"from_asset\":\"$CHK\",\"date\":\"2026-11-21\",\"amount\":1}]}" | field '["status"]')" "400"
+
 check "sync requires auth" "$(j -X POST "$B/api/sync/transactions" -d '{"records":[]}' | field '["status"]')" "401"
 
 # Paychecks: one-cent matching, copied paystubs, 401(k) loan lines

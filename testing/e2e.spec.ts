@@ -210,8 +210,13 @@ test("import history from a spreadsheet, with annual envelopes", async ({ page }
   const d = page.getByRole("dialog");
   await d.getByLabel("History file").setInputFiles(HISTORY_CSV);
   await expect(d.getByText(/^11 transactions/)).toBeVisible();
-  await expect(d.getByText(/2 account transfers and card payments skipped/)).toBeVisible();
-  await expect(d.getByText("already in the app", { exact: false })).toBeVisible(); // Groceries
+  await expect(d.getByText(/1 transfer between accounts/)).toBeVisible();
+  // Accounts are detected from the file: the card is paid by transfers from checking.
+  await expect(d.getByRole("radiogroup", { name: "Visa kind" }).getByRole("radio", { name: "Credit card" })).toHaveAttribute("aria-checked", "true");
+  await expect(d.getByRole("radiogroup", { name: "Checking kind" }).getByRole("radio", { name: "Checking" })).toHaveAttribute("aria-checked", "true");
+  await d.getByLabel("Visa owed", { exact: true }).fill("812.40");
+  await d.getByLabel("Checking balance", { exact: true }).fill("4321.09");
+  await expect(d.getByText("already in the app", { exact: false })).toHaveCount(2); // Groceries, and the Visa card
 
   await d.getByRole("radiogroup", { name: "Extra type", exact: true }).getByRole("radio", { name: "Annual" }).click();
   await d.getByRole("radiogroup", { name: "Christmas type", exact: true }).getByRole("radio", { name: "Annual" }).click();
@@ -265,6 +270,14 @@ test("import history from a spreadsheet, with annual envelopes", async ({ page }
   // Before the import's balances, a month shows what each envelope spent.
   await page.getByRole("button", { name: "Previous month" }).click();
   await expect(page.getByRole("button", { name: /Groceries: \$160 spent/ })).toBeVisible();
+
+  // The card is on Debts at the balance entered, with the payment from Checking;
+  // Checking is on Assets.
+  await page.getByRole("link", { name: /Debts/ }).click();
+  const visa = page.locator("div.chunk", { has: page.getByRole("heading", { name: "Visa" }) });
+  await expect(visa.getByText("$812.40").first()).toBeVisible();
+  await page.getByRole("link", { name: /Assets/ }).click();
+  await expect(page.getByText("$4,321.09").first()).toBeVisible();
 });
 
 test("household: the head adds a person, who shares the same budget", async ({ page }) => {

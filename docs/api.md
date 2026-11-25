@@ -95,8 +95,9 @@ Content-Type: application/json
   is **updated**; a new one is **created**. Re-running a workflow never makes duplicates.
 - Only the fields you send are changed on update.
 - Relations can point at other records by their external id with a `_external_id` suffix:
-  `envelope_external_id`, `earner_external_id` and `vendor_external_id` on transactions,
-  `default_envelope_external_id` on vendors, `debt_external_id` on debt payments,
+  `envelope_external_id`, `earner_external_id`, `vendor_external_id`, `account_asset_external_id`
+  and `account_debt_external_id` on transactions, `default_envelope_external_id` on vendors,
+  `debt_external_id` and `from_asset_external_id` on debt payments,
   `debts_external_id` (an array) on assets. You can also send the PocketBase `id` directly
   (`envelope`, `vendor`, `debt`, `debts`).
 - Send bank transactions with the bank's description as `payee`: the server matches it to a
@@ -274,8 +275,16 @@ Only rollover and annual envelopes carry cash. An envelope with an `opening_date
 from its `opening_balance`: activity before that date is left out of its balance.
 
 The app's **Import history** screen reads a CSV export (like Goodbudget's) in the browser,
-then saves it with three calls you can also use from n8n:
+then saves it with calls you can also use from n8n:
 
+0. The accounts. Each value in the file's Account column (or a column named `Standard`) is
+   an account. Moves between accounts (rows with no envelope) are paired into transfers, and
+   the transfers tell the kind: a card is spent on and paid off by transfers from another
+   account, checking is where paychecks land and what pays the cards, savings mostly moves
+   money back and forth. The person confirms each kind. Checking, savings and cash accounts
+   are `POST /api/sync/assets` and credit cards `POST /api/sync/debts`, with external ids
+   `import-acct-<name>` (an asset or debt already in the app with the same name keeps its
+   own external id, or gets that one).
 1. `POST /api/sync/envelopes` for the envelopes (external ids `import-env-<name>`).
 2. `POST /api/import/budgets` for each month's income and envelope transfers:
 
@@ -287,7 +296,11 @@ then saves it with three calls you can also use from n8n:
    A month that doesn't exist yet is created with `imported: true`. Each allocation listed
    replaces that envelope's amount for the month. At most 240 months per call.
 3. `POST /api/sync/transactions` for the transactions. Each row's external id is a hash of
-   its contents, so importing the same file again updates instead of duplicating.
+   its contents, so importing the same file again updates instead of duplicating. Each one
+   links to its account with `account_asset_external_id` or `account_debt_external_id`.
+4. `POST /api/sync/debt_payments` for each transfer into a card (`from_asset_external_id` is
+   the account that paid), then `POST /api/sync/debts` again to set each card's balance as of
+   the file's last day, since the payments lowered it.
 
 ## Vendors
 
@@ -436,7 +449,9 @@ Envelope cash left = allocation (+ carried, for rollover envelopes) − the mont
 | `amount` | number ≥ 0, required | Always positive; `kind` says which way |
 | `payee` | text | |
 | `note` | text | |
-| `account` | text | Bank or card account, e.g. `Visa` |
+| `account` | text | Bank or card account's name, e.g. `Visa` |
+| `account_asset` | relation → assets | The checking, savings or cash account it happened in |
+| `account_debt` | relation → debts | The credit card it was charged to |
 | `vendor` | relation → vendors | Set by matching `payee`, or by hand |
 | `vendor_locked` | bool | The vendor was picked by hand; matching leaves it alone |
 | `tax_category` | `charity` `medical` `child_care` `ira` `none` or empty | Overrides the vendor's and envelope's category. Empty: use theirs |
@@ -516,6 +531,7 @@ One per household per `year`. Percentages are in percent (`7.5`).
 | Field | Type | |
 | --- | --- | --- |
 | `debt` | relation → debts, required | |
+| `from_asset` | relation → assets | The account it was paid from, e.g. checking |
 | `date` | date, required | |
 | `amount` | number ≥ 0, required | Lowers the debt's balance |
 | `note` | text | |

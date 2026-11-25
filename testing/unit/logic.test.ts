@@ -13,7 +13,7 @@ const env = (id: string, extra: Partial<Envelope> = {}): Envelope => ({
 });
 const alloc = (envelope: string, amount: number): Allocation => ({ ...base, id: envelope + "a", budget: "b", envelope, amount });
 const tx = (envelope: string, amount: number, kind: Transaction["kind"] = "expense"): Transaction => ({
-  ...base, id: Math.random().toString(), kind, envelope, amount, date: "2026-11-05", payee: "", note: "", account: "", external_id: "",
+  ...base, id: Math.random().toString(), kind, envelope, amount, date: "2026-11-05", payee: "", note: "", account: "", account_asset: "", account_debt: "", external_id: "",
   earner: "", paystub_status: "", vendor: "", vendor_locked: false, tax_category: "", tax_amount: 0, tax_paid_by: "",
   tax_year: 0, tax_person: "", tax_acknowledged: false,
 });
