@@ -149,6 +149,22 @@ D14=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d '{"kind":"i
 j -H "$A" -X PATCH "$B/api/collections/transactions/records/$D14" -d "{\"earner\":\"$E5\"}" > /dev/null
 check "marking an old deposit as a paycheck matches the next paystub" "$(status_of "$D14")" "matched"
 
+# A paystub saved without its deposit gets linked to it (even an imported one), not copied onto it
+E6=$(j -H "$A" -X POST "$B/api/collections/earners/records" -d '{"name":"Ash"}' | field '["id"]')
+D15=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d '{"kind":"income","payee":"Gusto","amount":3188.52,"date":"2026-11-13 12:00:00.000Z"}' | field '["id"]')
+D16=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d '{"kind":"income","payee":"Gusto","amount":3188.53,"date":"2026-10-30 12:00:00.000Z"}' | field '["id"]')
+S6=$(j -H "$A" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\":\"$E6\",\"pay_date\":\"2026-11-13 12:00:00.000Z\",\"gross\":4791.67,\"net\":2925.35,\"deposit\":3188.52,\"source\":\"upload\"}" | field '["id"]')
+check "the paystub is linked to its own imported deposit" "$(j -H "$A" "$B/api/collections/paystubs/records/$S6" | field '["transaction"]')" "$D15"
+check "backfill only fills the earlier one" "$(j -H "$A" -X POST "$B/api/paystubs/$S6/backfill" | field '["filled"]')" "1"
+check "one paystub per deposit" "$(j -H "$A" "$B/api/collections/paystubs/records?filter=earner='$E6'" | field '["totalItems"]')" "2"
+# Cleaning up a copy that was put on the paystub's own deposit: saving the paystub replaces it.
+E7=$(j -H "$A" -X POST "$B/api/collections/earners/records" -d '{"name":"Bo"}' | field '["id"]')
+D17=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E7\",\"amount\":900,\"date\":\"2026-11-13 12:00:00.000Z\"}" | field '["id"]')
+j -H "$A" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\":\"$E7\",\"pay_date\":\"2026-11-13 12:00:00.000Z\",\"gross\":1000,\"net\":900,\"source\":\"repeat\",\"transaction\":\"$D17\"}" > /dev/null
+S7=$(j -H "$A" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\":\"$E7\",\"pay_date\":\"2026-11-13 12:00:00.000Z\",\"gross\":1000,\"net\":900,\"source\":\"upload\"}" | field '["id"]')
+check "saving the real paystub takes over its deposit" "$(j -H "$A" "$B/api/collections/paystubs/records/$S7" | field '["transaction"]')" "$D17"
+check "and removes the copy that was on it" "$(j -H "$A" "$B/api/collections/paystubs/records?filter=earner='$E7'" | field '["totalItems"]')" "1"
+
 # Annual envelopes, imported months and opening balances
 carried_of() { j -H "$A" "$B/api/finance/balances?month=$1" | field "[\"carried\"][\"$2\"]"; }
 XMAS=$(j -H "$A" -X POST "$B/api/sync/envelopes" -d '{"records":[{"external_id":"imp-xmas","name":"Christmas","period":"annual","goal":3600,"rollover":true,"opening_balance":500,"opening_date":"2026-11-10 23:59:59.999Z"}]}' | field '["records"][0]["id"]')

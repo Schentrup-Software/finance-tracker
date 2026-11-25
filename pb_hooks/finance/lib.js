@@ -335,17 +335,30 @@ function attachPaystub(app, paystub) {
     const d = new Date(date + "T12:00:00Z");
     const from = new Date(d.getTime() - 7 * 864e5).toISOString().replace("T", " ");
     const to = new Date(d.getTime() + 7 * 864e5).toISOString().replace("T", " ");
-    const waiting = app.findRecordsByFilter(
+    // This earner's deposits (waiting, or filled with a copy of another paystub),
+    // or income with no earner and no envelope (imported), nearest the pay date first.
+    const candidates = app.findRecordsByFilter(
       "transactions",
-      "owner = {:owner} && earner = {:earner} && kind = 'income' && paystub_status = 'needs_paystub' && date >= {:from} && date <= {:to}",
+      "owner = {:owner} && kind = 'income' && date >= {:from} && date <= {:to} && " +
+        "(earner = {:earner} || (earner = '' && envelope = ''))",
       "date",
       0,
       0,
       { owner: paystub.get("owner"), earner: paystub.get("earner"), from: from, to: to },
+    ).filter((t) =>
+      sameMoney(t.getFloat("amount"), depositOf(paystub)) &&
+      paystubsForTransaction(app, t.id).every((p) => p.get("source") === "repeat"),
     );
-    const hit = waiting.find((t) => sameMoney(t.getFloat("amount"), depositOf(paystub)));
+    const at = d.getTime();
+    const dist = (t) => Math.abs(new Date(t.getString("date").replace(" ", "T")).getTime() - at);
+    candidates.sort((a, b) => dist(a) - dist(b));
+    const hit = candidates[0];
     if (!hit) return;
     txId = hit.id;
+    if (!hit.get("earner")) {
+      app.db().newQuery("UPDATE transactions SET earner = {:e} WHERE id = {:id}")
+        .bind({ e: paystub.get("earner"), id: hit.id }).execute();
+    }
     paystub.set("transaction", txId);
     app.saveNoValidate(paystub);
   }
@@ -372,6 +385,11 @@ function backfillPaystub(app, ownerId, paystubId) {
   try { paystub = app.findRecordById("paystubs", paystubId); } catch (_) { paystub = null; }
   if (!paystub || paystub.get("owner") !== ownerId) throw new NotFoundError("Paystub not found.");
   if (paystub.get("source") === "repeat") return 0;
+  // The paystub's own deposit gets the paystub itself, not a copy of it.
+  if (!paystub.get("transaction")) {
+    attachPaystub(app, paystub);
+    paystub = app.findRecordById("paystubs", paystubId);
+  }
   // Deposits waiting for this earner's paystub, plus income with no earner yet
   // (imported from the bank or another app) that isn't money back into an envelope.
   const waiting = app.findRecordsByFilter(

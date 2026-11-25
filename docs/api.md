@@ -182,7 +182,9 @@ server compares its `amount` with that earner's most recent paystub's `deposit` 
 - **Different, or no paystub yet:** `paystub_status` becomes `needs_paystub`, and the app
   shows a prompt to upload that paycheck's paystub. When a paystub is saved for that
   earner with the same `deposit` (or net pay) within a week of the deposit, it is tied to the deposit and
-  the status becomes `matched`.
+  the status becomes `matched`. The nearest such deposit wins, and it can also be income with
+  no `earner` and no `envelope` (imported), which then gets the earner, or a deposit that
+  only has a copied paystub, which the real one replaces.
 
 - **Backfill:** `POST /api/paystubs/{id}/backfill` copies a paystub to every deposit from
   the same earner that is still `needs_paystub` and within one cent (above or below) of its
