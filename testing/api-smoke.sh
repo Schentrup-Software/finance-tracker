@@ -157,6 +157,8 @@ S6=$(j -H "$A" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\":\"$
 check "the paystub is linked to its own imported deposit" "$(j -H "$A" "$B/api/collections/paystubs/records/$S6" | field '["transaction"]')" "$D15"
 check "backfill only fills the earlier one" "$(j -H "$A" -X POST "$B/api/paystubs/$S6/backfill" | field '["filled"]')" "1"
 check "one paystub per deposit" "$(j -H "$A" "$B/api/collections/paystubs/records?filter=earner='$E6'" | field '["totalItems"]')" "2"
+D18=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d '{"kind":"income","payee":"Joey paycheck","amount":3188.52,"date":"2026-11-14 12:00:00.000Z"}' | field '["id"]')
+check "the same paycheck recorded twice isn't filled again" "$(j -H "$A" -X POST "$B/api/paystubs/$S6/backfill" | field '["filled"]')" "0"
 # Cleaning up a copy that was put on the paystub's own deposit: saving the paystub replaces it.
 E7=$(j -H "$A" -X POST "$B/api/collections/earners/records" -d '{"name":"Bo"}' | field '["id"]')
 D17=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E7\",\"amount\":900,\"date\":\"2026-11-13 12:00:00.000Z\"}" | field '["id"]')

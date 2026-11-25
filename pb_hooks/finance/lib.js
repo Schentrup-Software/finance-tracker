@@ -408,6 +408,9 @@ function backfillPaystub(app, ownerId, paystubId) {
     if (paystubsForTransaction(app, tx.id).length > 0) continue;
     const date = tx.getString("date");
     if (date > payDate && newerRealPaystub(app, paystub, date)) continue;
+    // A matching deposit within a few days of the pay date is this same paycheck
+    // recorded twice (typed in and imported), not another one: leave it alone.
+    if (Math.abs(daysBetween(date, payDate)) < 4) continue;
     if (!tx.get("earner")) {
       // Same check amount to the cent: it's this earner's paycheck. Set directly so
       // the transactions hooks don't run the match again.
@@ -420,6 +423,11 @@ function backfillPaystub(app, ownerId, paystubId) {
     filled++;
   }
   return filled;
+}
+
+/** Days from `a` to `b` (PocketBase date strings). */
+function daysBetween(a, b) {
+  return (new Date(b.slice(0, 10) + "T12:00:00Z").getTime() - new Date(a.slice(0, 10) + "T12:00:00Z").getTime()) / 864e5;
 }
 
 /** True when the earner has an uploaded or typed-in paystub after `paystub` and on or before `date`. */
