@@ -28,6 +28,15 @@ describe("annual envelopes and imports", () => {
     expect(x.yearSpent).toBe(900);
   });
 
+  it("compares spending only against monthly envelopes", () => {
+    const s = summarize([env("g"), env("xmas", { period: "annual", goal: 3600 })],
+      [alloc("g", 600), alloc("xmas", 300)], [tx("g", 120), tx("xmas", 500), tx("", 40)], {}, 5000);
+    expect(s.monthlyAssigned).toBe(600);
+    expect(s.monthlySpent).toBe(120);
+    expect(s.otherSpent).toBe(540);
+    expect(s.spent).toBe(660);
+  });
+
   it("money put straight into an envelope adds to it and isn't counted as income", () => {
     const s = summarize([env("joey")], [alloc("joey", 100)], [tx("joey", 30), tx("joey", 50, "income"), tx("", 2000, "income")], {}, 0);
     expect(s.envelopes[0].added).toBe(50);

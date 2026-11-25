@@ -141,7 +141,7 @@ export default function BudgetPage() {
           onImport={() => setImporting(true)} />
       ) : summary && view === "income" ? (
         <>
-          <SummaryRow summary={summary} onEditIncome={() => setEditIncome(true)} />
+          <SummaryRow summary={summary} imported={!!data.budget.imported} onEditIncome={() => setEditIncome(true)} />
           <Paychecks month={month} onAddIncome={() => setAdding("income")} />
         </>
       ) : summary && (
@@ -274,12 +274,17 @@ function StartMonth({ month, hasEnvelopes, onStarted, onImport }: {
 
 // ---------- Summary ----------
 
-function SummaryRow({ summary, onEditIncome }: { summary: ReturnType<typeof summarize>; onEditIncome: () => void }) {
+function SummaryRow({ summary, imported, onEditIncome }: {
+  summary: ReturnType<typeof summarize>; imported: boolean; onEditIncome: () => void;
+}) {
   const left = summary.leftToBudget;
-  const leftColor: Color = left === 0 ? "mint" : left > 0 ? "butter" : "coral";
+  const leftColor: Color | "white" = imported ? "white" : left === 0 ? "mint" : left > 0 ? "butter" : "coral";
   const leftHint = left === 0
     ? "Every dollar has a job! 🎉"
     : left > 0 ? "still needs a job" : "more than you make. Trim an envelope.";
+  // An imported month only knows envelope transfers, not fills, so totals of what was
+  // put in would mislead: show spending on its own.
+  const compare = !imported && summary.monthlyAssigned > 0;
 
   return (
     <div className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-3">
@@ -289,11 +294,22 @@ function SummaryRow({ summary, onEditIncome }: { summary: ReturnType<typeof summ
           hint={<>{money(summary.receivedIncome)} received so far <Icon name="edit" className="ml-1 h-4 w-4 align-[-2px]" /></>} />
       </Card>
       <Card color={leftColor} className="pop-in p-6" style={{ ["--i" as any]: 1 }}>
-        <Stat label={left < 0 ? "Over budget" : "Left to budget"} value={money(Math.abs(left))} hint={leftHint} />
+        {imported ? (
+          <Stat label="Left to budget" value="—"
+            hint="Imported month. The spreadsheet didn't say how much went into each envelope, so this can't be worked out." />
+        ) : (
+          <Stat label={left < 0 ? "Over budget" : "Left to budget"} value={money(Math.abs(left))} hint={leftHint} />
+        )}
       </Card>
       <Card color="lilac" className="pop-in p-6" style={{ ["--i" as any]: 2 }}>
-        <Stat label="Spent" value={money(summary.spent)} hint={`of ${money(summary.assigned)} in envelopes`} />
-        <div className="mt-3"><Meter value={summary.assigned ? summary.spent / summary.assigned : 0} label="Spent of assigned" /></div>
+        <Stat label="Spent" value={money(summary.monthlySpent)}
+          hint={<>
+            {compare ? `of ${money(summary.monthlyAssigned)} in monthly envelopes` : "from monthly envelopes"}
+            {summary.otherSpent > 0 && <span className="block">+ {money(summary.otherSpent)} from annual envelopes or no envelope</span>}
+          </>} />
+        {compare && (
+          <div className="mt-3"><Meter value={summary.monthlySpent / summary.monthlyAssigned} label="Spent of monthly envelopes" /></div>
+        )}
       </Card>
     </div>
   );

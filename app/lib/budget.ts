@@ -60,6 +60,12 @@ export interface BudgetSummary {
   /** Zero-based budgeting: income minus everything assigned. Goal is $0. */
   leftToBudget: number;
   spent: number;
+  /** Assigned to monthly envelopes only: what this month's spending is measured against. */
+  monthlyAssigned: number;
+  /** Spent from monthly envelopes. */
+  monthlySpent: number;
+  /** Spent from annual envelopes or with no envelope: not part of the monthly comparison. */
+  otherSpent: number;
   envelopes: EnvelopeSummary[];
   unassignedSpending: Transaction[];
 }
@@ -114,12 +120,18 @@ export function summarize(
     summaries.reduce((s, e) => s + e.spent, 0) + unassignedSpending.reduce((s, t) => s + t.amount, 0),
   );
 
+  const monthlyOnly = summaries.filter((e) => !isAnnual(e.envelope));
+  const monthlySpent = round2(monthlyOnly.reduce((s, e) => s + e.spent, 0));
+
   return {
     plannedIncome,
     receivedIncome: round2(receivedIncome),
     assigned,
     leftToBudget: round2(plannedIncome - assigned),
     spent,
+    monthlyAssigned: round2(monthlyOnly.reduce((s, e) => s + e.planned, 0)),
+    monthlySpent,
+    otherSpent: round2(spent - monthlySpent),
     envelopes: summaries,
     unassignedSpending,
   };
