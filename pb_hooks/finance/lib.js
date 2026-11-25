@@ -27,9 +27,9 @@ const SYNCABLE = ["earners", "envelopes", "vendors", "transactions", "debts", "d
 // Relation fields a sync may fill by the other record's external_id, e.g.
 // `envelope_external_id: "groceries"` on a transaction.
 const RELATIONS = {
-  transactions: { envelope: "envelopes", earner: "earners", vendor: "vendors" },
+  transactions: { envelope: "envelopes", earner: "earners", vendor: "vendors", account_asset: "assets", account_debt: "debts" },
   vendors: { default_envelope: "envelopes" },
-  debt_payments: { debt: "debts" },
+  debt_payments: { debt: "debts", from_asset: "assets" },
   assets: { debts: "debts" },
 };
 

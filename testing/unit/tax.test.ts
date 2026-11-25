@@ -9,7 +9,7 @@ const base = { owner: "u", created: "", updated: "" };
 let n = 0;
 const tx = (extra: Partial<Transaction> = {}): Transaction => ({
   ...base, id: `t${++n}`, kind: "expense", envelope: "", earner: "", paystub_status: "", date: "2027-03-01 12:00:00.000Z",
-  amount: 100, payee: "", note: "", account: "", external_id: "", vendor: "", vendor_locked: false, tax_category: "",
+  amount: 100, payee: "", note: "", account: "", account_asset: "", account_debt: "", external_id: "", vendor: "", vendor_locked: false, tax_category: "",
   tax_amount: 0, tax_paid_by: "", tax_year: 0, tax_person: "", tax_acknowledged: false, ...extra,
 });
 const vendor = (id: string, extra: Partial<Vendor> = {}): Vendor => ({

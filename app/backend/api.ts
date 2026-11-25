@@ -268,7 +268,7 @@ export function revokeApiToken(id: string) {
 // ---------- Import ----------
 
 /** Upserts records by external_id through the sync endpoint, in batches of 500. */
-export async function syncRecords(collection: "envelopes" | "transactions", records: object[], onProgress?: (done: number) => void) {
+export async function syncRecords(collection: "envelopes" | "transactions" | "debts" | "assets" | "debt_payments", records: object[], onProgress?: (done: number) => void) {
   let done = 0;
   for (let i = 0; i < records.length; i += 500) {
     const batch = records.slice(i, i + 500);

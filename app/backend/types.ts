@@ -67,6 +67,10 @@ export interface Transaction extends BaseRecord {
   note: string;
   /** Bank or card account, as text. */
   account: string;
+  /** The checking, savings or cash account it happened in (an asset). */
+  account_asset: string;
+  /** The credit card it was charged to (a debt). */
+  account_debt: string;
   /** Who the money went to. Set by matching the payee (statement value), or picked by hand. */
   vendor: string;
   /** The vendor was picked by hand: matching never changes it. */
@@ -168,6 +172,8 @@ export interface Debt extends BaseRecord {
 
 export interface DebtPayment extends BaseRecord {
   debt: string;
+  /** The account the payment came from, e.g. Checking paying a card. */
+  from_asset: string;
   date: string;
   amount: number;
   note: string;
