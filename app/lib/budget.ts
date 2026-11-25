@@ -1,4 +1,4 @@
-import type { Allocation, Envelope, EnvelopeGroup, Transaction } from "~/backend/types";
+import { ENVELOPE_GROUPS, type Allocation, type Envelope, type EnvelopeGroup, type Transaction } from "~/backend/types";
 import { round2 } from "./money";
 
 export const GROUP_LABELS: Record<EnvelopeGroup, string> = {
@@ -155,4 +155,26 @@ export function monthLeftShare(month: string, today: Date = new Date()): number 
   if (y > ty || m > tm) return 1;
   const days = new Date(y, m, 0).getDate();
   return (days - today.getDate()) / days;
+}
+
+/** Envelope list order: by `sort`, then group, then name for ties. */
+export function compareEnvelopes(a: Envelope, b: Envelope): number {
+  const rank = (g: string) => {
+    const i = (ENVELOPE_GROUPS as readonly string[]).indexOf(g);
+    return i < 0 ? 99 : i;
+  };
+  return a.sort - b.sort || rank(a.group) - rank(b.group) || a.name.localeCompare(b.name);
+}
+
+/** Moves the item at `from` to position `to` (clamped to the list). */
+export function reorder(ids: string[], from: number, to: number): string[] {
+  const next = [...ids];
+  const [moved] = next.splice(from, 1);
+  next.splice(Math.max(0, Math.min(next.length, to)), 0, moved);
+  return next;
+}
+
+/** New sort values for a full list given in display order: only the ones that change. */
+export function sortUpdates(ordered: Pick<Envelope, "id" | "sort">[]): { id: string; sort: number }[] {
+  return ordered.flatMap((e, i) => (e.sort === i ? [] : [{ id: e.id, sort: i }]));
 }

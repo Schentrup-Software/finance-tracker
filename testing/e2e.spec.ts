@@ -227,6 +227,30 @@ test("import history from a spreadsheet, with annual envelopes", async ({ page }
   await expect(page.getByText("Delta Air Lines")).toBeVisible();
   await shot(page, "09-annual-envelopes");
 
+  // Envelopes can be put in any order, and the order is saved.
+  const monthlyRegion = page.getByRole("region", { name: "Monthly" });
+  const names = () => monthlyRegion.getByRole("button", { name: /^[^:]+: \$/ }).evaluateAll(
+    (els) => els.map((el) => el.getAttribute("aria-label")!.split(":")[0]));
+  const before = await names();
+  await page.getByRole("button", { name: "Reorder" }).click();
+  await monthlyRegion.getByRole("button", { name: `Move ${before[1]} up` }).click();
+  await expect.poll(names).toEqual([before[1], before[0], ...before.slice(2)]);
+  // Dragging the third one to the top.
+  const handle = monthlyRegion.getByRole("button", { name: `Drag ${before[2]}` });
+  await monthlyRegion.scrollIntoViewIfNeeded();
+  const top = (await monthlyRegion.getByRole("button", { name: `Drag ${before[1]}` }).boundingBox())!;
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2, top.y - 10, { steps: 12 });
+  await page.mouse.up();
+  const reordered = [before[2], before[1], before[0], ...before.slice(3)];
+  await expect.poll(names).toEqual(reordered);
+  await page.getByRole("button", { name: "Done" }).click();
+  await shot(page, "10-reordered");
+  await page.reload();
+  await expect.poll(names).toEqual(reordered);
+
   // Before the import's balances, a month shows what each envelope spent.
   await page.getByRole("button", { name: "Previous month" }).click();
   await expect(page.getByRole("button", { name: /Groceries: \$160 spent/ })).toBeVisible();

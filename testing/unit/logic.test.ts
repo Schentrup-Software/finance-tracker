@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Allocation, Envelope, Transaction } from "~/backend/types";
-import { monthLeftShare, monthlyToGoal, summarize } from "~/lib/budget";
+import { compareEnvelopes, monthLeftShare, monthlyToGoal, reorder, sortUpdates, summarize } from "~/lib/budget";
 import { interestLeft, paidShare, payoffMonths } from "~/lib/debts";
 import { equity, netWorth, groupFor } from "~/lib/assets";
 import { nextMonth, monthRange } from "~/lib/dates";
@@ -151,5 +151,18 @@ describe("monthLeftShare", () => {
     expect(monthLeftShare("2025-12", nov25)).toBe(0);
     expect(monthLeftShare("2026-12", nov25)).toBe(1);
     expect(monthLeftShare("2027-01", nov25)).toBe(1);
+  });
+});
+
+describe("envelope order", () => {
+  it("orders by sort, then group, then name", () => {
+    const list = [env("b", { sort: 1 }), env("food", { sort: 0, group: "food" }), env("give", { sort: 0, group: "giving" }), env("a", { sort: 1 })];
+    expect(list.sort(compareEnvelopes).map((e) => e.id)).toEqual(["give", "food", "a", "b"]);
+  });
+  it("moves one envelope and renumbers only what changed", () => {
+    expect(reorder(["a", "b", "c", "d"], 3, 1)).toEqual(["a", "d", "b", "c"]);
+    expect(reorder(["a", "b", "c"], 0, 9)).toEqual(["b", "c", "a"]);
+    expect(sortUpdates([{ id: "a", sort: 0 }, { id: "d", sort: 3 }, { id: "b", sort: 1 }, { id: "c", sort: 2 }]))
+      .toEqual([{ id: "d", sort: 1 }, { id: "b", sort: 2 }, { id: "c", sort: 3 }]);
   });
 });

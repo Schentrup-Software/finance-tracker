@@ -363,7 +363,7 @@ Superuser-only through the collection API (and `token_hash` is hidden); use `/ap
 | `emoji` | text | |
 | `default_amount` | number | Used when a new month starts with no earlier budget |
 | `rollover` | bool | Sinking fund: unspent cash carries into next month |
-| `sort` | number | |
+| `sort` | number | Place in the envelope list, lowest first. The app renumbers envelopes 0, 1, 2… when someone drags them into a new order |
 | `archived` | bool | Hidden from new months |
 | `period` | `monthly` (or empty) or `annual` | Annual envelopes save toward a yearly goal and always keep leftover cash |
 | `goal` | number ≥ 0 | Yearly goal for annual envelopes |

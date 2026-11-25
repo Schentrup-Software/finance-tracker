@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
   createEnvelope, createTransaction, listEarners, listWaitingDeposits, deleteEnvelope, deleteTransaction, errorMessage, fromPbDate,
@@ -19,7 +19,7 @@ import {
   Button, Card, ColorPicker, EmptyState, ErrorNote, FormActions, Icon, Meter, Modal, MoneyInput,
   RoundButton, SectionTitle, Select, Stat, TextInput, Toggle, cx,
 } from "~/components/ui";
-import { GROUP_LABELS, STARTER_ENVELOPES, isAnnual, monthLeftShare, monthlyToGoal, summarize, type EnvelopeSummary } from "~/lib/budget";
+import { GROUP_LABELS, STARTER_ENVELOPES, compareEnvelopes, isAnnual, reorder, sortUpdates, monthLeftShare, monthlyToGoal, summarize, type EnvelopeSummary } from "~/lib/budget";
 import { monthLabel, monthOf, nextMonth, shortDate, todayISO } from "~/lib/dates";
 import { money, parseMoney } from "~/lib/money";
 import { TAX_CATEGORY_EMOJI, TAX_CATEGORY_LABELS, taxRows, type TaxRow } from "~/lib/tax";
@@ -27,8 +27,6 @@ import { TAX_CATEGORY_EMOJI, TAX_CATEGORY_LABELS, taxRows, type TaxRow } from "~
 export function meta() {
   return [{ title: "Budget · Finance Tracker" }];
 }
-
-const GROUP_ORDER = new Map(ENVELOPE_GROUPS.map((g, i) => [g, i]));
 
 const VIEWS = [
   { key: "envelopes", label: "Envelopes", emoji: "✉️" },
@@ -90,13 +88,31 @@ export default function BudgetPage() {
 
   const sorted = useMemo(() => {
     if (!summary) return [];
-    return [...summary.envelopes].sort((a, b) =>
-      (GROUP_ORDER.get(a.envelope.group as EnvelopeGroup) ?? 99) - (GROUP_ORDER.get(b.envelope.group as EnvelopeGroup) ?? 99) ||
-      a.envelope.sort - b.envelope.sort || a.envelope.name.localeCompare(b.envelope.name));
+    return [...summary.envelopes].sort((a, b) => compareEnvelopes(a.envelope, b.envelope));
   }, [summary]);
 
   const monthly = sorted.filter((s) => !isAnnual(s.envelope));
   const annual = sorted.filter((s) => isAnnual(s.envelope));
+
+  const [reordering, setReordering] = useState(false);
+  // Saves a group's new order: the whole list is renumbered 0, 1, 2… (monthly first),
+  // and only envelopes whose number changed are written.
+  async function saveOrder(group: "monthly" | "annual", ids: string[]) {
+    if (!data) return;
+    const byId = new Map(sorted.map((s) => [s.envelope.id, s.envelope]));
+    const groupIds = (group === "monthly" ? [ids, annual.map((s) => s.envelope.id)] : [monthly.map((s) => s.envelope.id), ids]).flat();
+    const updates = sortUpdates(groupIds.map((id) => byId.get(id)!));
+    if (!updates.length) return;
+    const newSort = new Map(updates.map((u) => [u.id, u.sort]));
+    setData({ ...data, envelopes: data.envelopes.map((e) => (newSort.has(e.id) ? { ...e, sort: newSort.get(e.id)! } : e)) });
+    try {
+      await Promise.all(updates.map((u) => updateEnvelope(u.id, { sort: u.sort })));
+      setError(null);
+    } catch (err) {
+      setError(errorMessage(err));
+      reload();
+    }
+  }
   const selected = summary?.envelopes.find((e) => e.envelope.id === openEnvelope) ?? null;
 
   return (
@@ -158,6 +174,11 @@ export default function BudgetPage() {
 
           <SectionTitle action={
             <div className="flex flex-wrap justify-end gap-2">
+              {sorted.length > 1 && (
+                <Button small color={reordering ? "sky" : "white"} aria-pressed={reordering} onClick={() => setReordering(!reordering)}>
+                  <Icon name={reordering ? "check" : "grip"} className="h-5 w-5" /> {reordering ? "Done" : "Reorder"}
+                </Button>
+              )}
               <Button small color="mint" onClick={() => setAdding("expense")}><Icon name="cash" className="h-5 w-5" /> Spend</Button>
               <Button small color="butter" onClick={() => setAdding("income")}><Icon name="plus" className="h-5 w-5" /> Income</Button>
             </div>
@@ -169,10 +190,14 @@ export default function BudgetPage() {
             </EmptyState>
           ) : null}
 
-          <EnvelopeGroup title="Monthly" items={monthly} offset={0} month={month}
-            onOpen={setOpenEnvelope} onNew={() => setEditing("new")} />
+          {reordering && (
+            <p className="mt-2 px-2 font-semibold opacity-80">Drag the handles, or use the arrows, to put envelopes in the order you want.</p>
+          )}
+          <EnvelopeGroup title="Monthly" items={monthly} offset={0} month={month} reordering={reordering}
+            onReorder={(ids) => saveOrder("monthly", ids)} onOpen={setOpenEnvelope} onNew={() => setEditing("new")} />
           {annual.length > 0 && (
-            <EnvelopeGroup title="Annual" items={annual} offset={monthly.length} month={month} onOpen={setOpenEnvelope} />
+            <EnvelopeGroup title="Annual" items={annual} offset={monthly.length} month={month} reordering={reordering}
+              onReorder={(ids) => saveOrder("annual", ids)} onOpen={setOpenEnvelope} />
           )}
 
           <div className="mt-4 text-right">
@@ -336,14 +361,46 @@ function writeCollapsed(title: string, collapsed: boolean) {
   }
 }
 
-function EnvelopeGroup({ title, items, offset, month, onOpen, onNew }: {
-  title: string; items: EnvelopeSummary[]; offset: number; month: string; onOpen: (id: string) => void; onNew?: () => void;
+function EnvelopeGroup({ title, items, offset, month, reordering, onReorder, onOpen, onNew }: {
+  title: string; items: EnvelopeSummary[]; offset: number; month: string; reordering: boolean;
+  onReorder: (ids: string[]) => void; onOpen: (id: string) => void; onNew?: () => void;
 }) {
   const total = items.reduce((sum, s) => sum + (s.historyOnly ? 0 : s.left), 0);
   const [collapsed, setCollapsed] = useState(false);
   useEffect(() => setCollapsed(readCollapsed(title)), [title]);
   const toggle = () => { writeCollapsed(title, !collapsed); setCollapsed(!collapsed); };
   const pace = month === monthOf() ? monthLeftShare(month) : null;
+
+  // While dragging, the order lives here; it is saved when the handle is let go.
+  const [dragOrder, setDragOrder] = useState<string[] | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const rows = useRef(new Map<string, HTMLElement>());
+  const byId = new Map(items.map((s) => [s.envelope.id, s]));
+  const ids = items.map((s) => s.envelope.id);
+  const shown = (dragOrder ?? ids).filter((id) => byId.has(id)).map((id) => byId.get(id)!);
+
+  function startDrag(e: React.PointerEvent, id: string) {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDragging(id);
+    setDragOrder(ids);
+  }
+  function moveDrag(e: React.PointerEvent) {
+    if (!dragging || !dragOrder) return;
+    const others = dragOrder.filter((id) => id !== dragging);
+    const to = others.filter((id) => {
+      const r = rows.current.get(id)?.getBoundingClientRect();
+      return r && e.clientY > r.top + r.height / 2;
+    }).length;
+    const next = [...others.slice(0, to), dragging, ...others.slice(to)];
+    if (next.join() !== dragOrder.join()) setDragOrder(next);
+  }
+  function endDrag() {
+    if (dragOrder && dragOrder.join() !== ids.join()) onReorder(dragOrder);
+    setDragging(null);
+    setDragOrder(null);
+  }
+  const move = (i: number, step: number) => onReorder(reorder(ids, i, i + step));
 
   return (
     <section className="mt-5" aria-label={title}>
@@ -359,11 +416,36 @@ function EnvelopeGroup({ title, items, offset, month, onOpen, onNew }: {
       </button>
       {!collapsed && (
         <div className="tray mt-2 overflow-hidden">
-          {items.map((s, i) => (
-            <EnvelopeRow key={s.envelope.id} s={s} index={offset + i} pace={isAnnual(s.envelope) ? null : pace}
-              onOpen={() => onOpen(s.envelope.id)} />
+          {shown.map((s, i) => (
+            <div key={s.envelope.id} ref={(el) => { if (el) rows.current.set(s.envelope.id, el); else rows.current.delete(s.envelope.id); }}
+              className={cx("flex items-stretch border-b-[3px] border-[rgba(var(--ink-rgb),.06)]", dragging === s.envelope.id && "relative z-10 bg-white shadow-lg")}>
+              {reordering && (
+                <div className="flex shrink-0 items-center gap-1 pl-3">
+                  <button type="button" aria-label={`Drag ${s.envelope.name}`} title="Drag to reorder"
+                    className="cursor-grab touch-none rounded-xl p-2 active:cursor-grabbing"
+                    onPointerDown={(e) => startDrag(e, s.envelope.id)} onPointerMove={moveDrag}
+                    onPointerUp={endDrag} onPointerCancel={endDrag}>
+                    <Icon name="grip" className="h-6 w-6" />
+                  </button>
+                  <div className="flex flex-col">
+                    <button type="button" aria-label={`Move ${s.envelope.name} up`} disabled={i === 0}
+                      className="rounded-lg px-1 disabled:opacity-25" onClick={() => move(i, -1)}>
+                      <Icon name="up" className="h-5 w-5" />
+                    </button>
+                    <button type="button" aria-label={`Move ${s.envelope.name} down`} disabled={i === shown.length - 1}
+                      className="rounded-lg px-1 disabled:opacity-25" onClick={() => move(i, 1)}>
+                      <Icon name="down" className="h-5 w-5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <EnvelopeRow s={s} index={offset + i} pace={isAnnual(s.envelope) ? null : pace}
+                  onOpen={() => onOpen(s.envelope.id)} />
+              </div>
+            </div>
           ))}
-          {onNew && (
+          {onNew && !reordering && (
             <button type="button" onClick={onNew}
               className="flex w-full items-center gap-3 px-5 py-4 font-black opacity-80 hover:bg-white hover:opacity-100">
               <span className="round-btn h-9 w-9"><Icon name="plus" className="h-5 w-5" /></span>
@@ -385,7 +467,7 @@ function EnvelopeRow({ s, index, pace, onOpen }: {
   const of = annual && s.envelope.goal ? s.envelope.goal : s.planned + s.carried + s.added;
   return (
     <button type="button" onClick={onOpen}
-      className={cx("pop-in block w-full border-b-[3px] border-[rgba(var(--ink-rgb),.06)] px-5 py-3 text-left hover:bg-white",
+      className={cx("pop-in block w-full px-5 py-3 text-left hover:bg-white",
         `c-${color}`, s.envelope.archived && "opacity-60")}
       style={{ ["--i" as any]: index }}
       aria-label={s.historyOnly ? `${s.envelope.name}: ${money(s.spent)} spent` : `${s.envelope.name}: ${money(s.left)} left of ${money(of)}`}>
