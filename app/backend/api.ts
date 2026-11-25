@@ -480,7 +480,14 @@ export async function savePaystub(
       employer_paid: !!l.employer_paid, sort: i };
     return l.id ? update<PaystubLine>("paystub_lines", l.id, d) : create<PaystubLine>("paystub_lines", d);
   }));
+  // Earlier paychecks still waiting for a paystub, with the same check amount, get a copy of this one.
+  if (paystub.source !== "repeat") await backfillPaystub(paystub.id);
   return paystub;
+}
+
+/** Copies a paystub to earlier matching deposits that are waiting for one. Returns how many it filled in. */
+export async function backfillPaystub(id: string): Promise<number> {
+  return (await pb.send<{ filled: number }>(`/api/paystubs/${id}/backfill`, { method: "POST" })).filled;
 }
 
 export const deletePaystub = (id: string) => remove("paystubs", id);
