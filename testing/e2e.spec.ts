@@ -269,3 +269,73 @@ test("household: the head adds a person, who shares the same budget", async ({ p
   await page.getByRole("button", { name: "Remove Brie" }).click();
   await expect(page.getByText("brie@example.test")).toHaveCount(0);
 });
+
+test("vendors and taxes: a recurring gift from Bills is matched, tagged and acknowledged", async ({ page }) => {
+  await signIn(page);
+
+  async function spend(envelope: string, amount: string, where: string, date?: string) {
+    await page.getByRole("button", { name: "Spend", exact: true }).click();
+    const s = page.getByRole("dialog");
+    await s.getByLabel("From envelope").selectOption({ label: envelope });
+    await s.getByLabel("Amount").fill(amount);
+    if (date) await s.getByLabel("Date").fill(date);
+    await s.getByLabel("Where").fill(where);
+    await s.getByRole("button", { name: "Spend" }).click();
+    await expect(s).toHaveCount(0);
+  }
+
+  // A gift paid from the bills envelope, as the bank writes it.
+  await spend("💡 Utilities", "300", "PAYPAL *STMARYSCHURCH 402-555-0100");
+  const row = page.getByRole("button", { name: /PAYPAL \*STMARYSCHURCH 402-555-0100/ });
+  await expect(row.getByText("who is this?")).toBeVisible();
+
+  // Teach it once: a new vendor, matched on the statement text from now on.
+  await row.click();
+  let d = page.getByRole("dialog");
+  await d.getByLabel("Vendor").selectOption({ label: "+ New vendor…" });
+  await d.getByLabel("New vendor's name").fill("St. Mary's Church");
+  await expect(d.getByText("Always match “PAYPAL *STMARYSCHURCH” to St. Mary's Church")).toBeVisible();
+  await shot(page, "11-transaction-details");
+  await d.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByRole("button", { name: /St\. Mary's Church/ })).toBeVisible();
+
+  // On the Vendors view, mark the church as a charity.
+  await page.getByRole("tab", { name: /Vendors/ }).click();
+  await page.getByRole("button", { name: /St\. Mary's Church: \$300/ }).click();
+  d = page.getByRole("dialog");
+  await d.getByLabel("Tax").selectOption({ label: "🎁 Donations" });
+  await d.getByLabel("EIN").fill("12-3456789");
+  await d.getByRole("button", { name: "Save" }).click();
+  await expect(d).toHaveCount(0);
+
+  // Statement text with no vendor yet: teach it from the "Who is this?" list.
+  await page.getByRole("button", { name: "Who is PUBLIX?" }).click();
+  d = page.getByRole("dialog");
+  await expect(d.getByLabel("Vendor name")).toHaveValue("Publix");
+  await d.getByRole("button", { name: /^Match \d+ payments?$/ }).click();
+  await expect(page.getByRole("button", { name: /^Publix: / })).toBeVisible();
+  await shot(page, "12-vendors");
+
+  // Next month's gift is matched and tagged on its own; it's $250+, so it needs a receipt.
+  await page.getByRole("tab", { name: /Envelopes/ }).click();
+  await spend("💡 Utilities", "300", "PayPal *StMarysChurch 402-555-0177");
+  const gift = page.getByRole("button", { name: /St\. Mary's Church.*needs receipt/ });
+  await expect(gift).toHaveCount(2);
+
+  // The Taxes view totals the gifts and asks for the acknowledgment.
+  await page.getByRole("tab", { name: /Taxes/ }).click();
+  const giving = page.getByRole("region", { name: /Donations/ });
+  await expect(giving.getByText("$600.00").first()).toBeVisible();
+  await expect(page.getByText(/2 gift\(s\) of \$250 or more need/)).toBeVisible();
+  await giving.getByLabel("Year-end statement from St. Mary's Church").setInputFiles(PAYSTUB_PDF);
+  await expect(giving.getByText("✓ Year-end statement")).toBeVisible();
+  await expect(page.getByText(/gift\(s\) of \$250 or more need/)).toHaveCount(0);
+
+  // AGI sets the 0.5% floor.
+  await page.getByRole("button", { name: "Edit AGI and figures" }).click();
+  d = page.getByRole("dialog");
+  await d.getByLabel("Adjusted gross income (AGI)").fill("100000");
+  await d.getByRole("button", { name: "Save" }).click();
+  await expect(giving.getByText("$100.00")).toBeVisible(); // 600 given - 500 floor
+  await shot(page, "13-taxes");
+});

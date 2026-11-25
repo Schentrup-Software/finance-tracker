@@ -33,6 +33,8 @@ export interface Envelope extends BaseRecord {
   /** Cash in the envelope at the end of opening_date (set by an import). Balances count from here. */
   opening_balance: number;
   opening_date: string;
+  /** Everything spent from this envelope counts toward this tax category, unless a transaction or its vendor says otherwise. */
+  tax_category: TaxCategory | "";
   external_id: string;
 }
 
@@ -65,7 +67,85 @@ export interface Transaction extends BaseRecord {
   note: string;
   /** Bank or card account, as text. */
   account: string;
+  /** Who the money went to. Set by matching the payee (statement value), or picked by hand. */
+  vendor: string;
+  /** The vendor was picked by hand: matching never changes it. */
+  vendor_locked: boolean;
+  /** Overrides the vendor's and envelope's tax category; "none" means not deductible. */
+  tax_category: TaxCategory | "none" | "";
+  /** The deductible part when it isn't the whole amount. 0 means the whole amount. */
+  tax_amount: number;
+  /** Paid or reimbursed by an HSA, FSA or insurance: listed, but not deductible. */
+  tax_paid_by: TaxPaidBy | "";
+  /** IRA contributions made January to April can count for the year before. 0 means the date's year. */
+  tax_year: number;
+  /** Whose IRA. */
+  tax_person: string;
+  /** The charity's written acknowledgment is in hand (needed for gifts of $250 or more). */
+  tax_acknowledged: boolean;
   external_id: string;
+}
+
+// ---------- Vendors and taxes ----------
+
+export const TAX_CATEGORIES = ["charity", "medical", "child_care", "ira"] as const;
+export type TaxCategory = (typeof TAX_CATEGORIES)[number];
+
+export const TAX_PAID_BY = ["hsa", "health_fsa", "insurance"] as const;
+export type TaxPaidBy = (typeof TAX_PAID_BY)[number];
+
+export const CADENCES = ["weekly", "biweekly", "monthly", "quarterly", "annual"] as const;
+export type Cadence = (typeof CADENCES)[number];
+
+export interface Vendor extends BaseRecord {
+  name: string;
+  emoji: string;
+  color: Color | "";
+  /** Statement values that belong to this vendor, e.g. "PAYPAL *STMARYSCHURCH". */
+  matches: string[] | null;
+  default_envelope: string;
+  recurring: Cadence | "";
+  expected_amount: number;
+  expected_day: number;
+  tax_category: TaxCategory | "";
+  legal_name: string;
+  address: string;
+  tin: string;
+  notes: string;
+  archived: boolean;
+  external_id: string;
+}
+
+export const TAX_DOCUMENT_KINDS = ["receipt", "acknowledgment", "year_end_statement", "other"] as const;
+export type TaxDocumentKind = (typeof TAX_DOCUMENT_KINDS)[number];
+
+export interface TaxDocument extends BaseRecord {
+  file: string;
+  tax_year: number;
+  kind: TaxDocumentKind | "";
+  label: string;
+  transaction: string;
+  vendor: string;
+}
+
+export interface TaxYear extends BaseRecord {
+  year: number;
+  agi: number;
+  other_itemized: number;
+  confirmed: boolean;
+  standard_deduction: number;
+  charity_floor_pct: number;
+  charity_cash_cap_pct: number;
+  nonitemizer_charity_cap: number;
+  medical_floor_pct: number;
+  care_cap_one: number;
+  care_cap_two: number;
+  qualifying_children: number;
+  ira_limit: number;
+  ira_catch_up: number;
+  ira_phaseout_start: number;
+  ira_phaseout_end: number;
+  notes: string;
 }
 
 export const DEBT_TYPES = [

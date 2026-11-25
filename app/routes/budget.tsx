@@ -2,13 +2,19 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
   createEnvelope, createTransaction, listEarners, deleteEnvelope, deleteTransaction, errorMessage, fromPbDate,
-  loadMonth, setAllocation, startMonth, subscribeAll, toPbDate, updateBudget, updateEnvelope,
+  listTaxDocuments, listVendors, loadMonth, setAllocation, startMonth, subscribeAll, toPbDate, updateBudget, updateEnvelope,
   type MonthData,
 } from "~/backend/api";
-import { ENVELOPE_GROUPS, type Color, type Earner, type Envelope, type EnvelopeGroup, type TransactionKind } from "~/backend/types";
+import {
+  ENVELOPE_GROUPS, TAX_CATEGORIES, type Color, type Earner, type Envelope, type EnvelopeGroup, type TaxCategory,
+  type TaxDocument, type Transaction, type TransactionKind, type Vendor,
+} from "~/backend/types";
 import { EnvelopeArt } from "~/components/EnvelopeArt";
 import { ImportHistory } from "~/components/ImportHistory";
 import { Paychecks } from "~/components/Paychecks";
+import { TaxesView } from "~/components/Taxes";
+import { TaxBadge, TransactionDetails } from "~/components/TransactionDetails";
+import { VendorsView } from "~/components/Vendors";
 import {
   Button, Card, ColorPicker, EmptyState, ErrorNote, FormActions, Icon, Meter, Modal, MoneyInput,
   RoundButton, SectionTitle, Select, Stat, TextInput, Toggle, cx,
@@ -16,6 +22,7 @@ import {
 import { GROUP_LABELS, STARTER_ENVELOPES, isAnnual, monthlyToGoal, summarize, type EnvelopeSummary } from "~/lib/budget";
 import { monthLabel, monthOf, nextMonth, shortDate, todayISO } from "~/lib/dates";
 import { money, parseMoney } from "~/lib/money";
+import { TAX_CATEGORY_EMOJI, TAX_CATEGORY_LABELS, taxRows, type TaxRow } from "~/lib/tax";
 
 export function meta() {
   return [{ title: "Budget · Finance Tracker" }];
@@ -23,17 +30,33 @@ export function meta() {
 
 const GROUP_ORDER = new Map(ENVELOPE_GROUPS.map((g, i) => [g, i]));
 
+const VIEWS = [
+  { key: "envelopes", label: "Envelopes", emoji: "✉️" },
+  { key: "vendors", label: "Vendors", emoji: "🏪" },
+  { key: "taxes", label: "Taxes", emoji: "🧾" },
+] as const;
+type View = (typeof VIEWS)[number]["key"];
+
 export default function BudgetPage() {
   const [params, setParams] = useSearchParams();
   const month = /^\d{4}-\d{2}$/.test(params.get("month") ?? "") ? params.get("month")! : monthOf();
-  const setMonth = (m: string) => setParams(m === monthOf() ? {} : { month: m }, { replace: true });
+  const view: View = VIEWS.some((v) => v.key === params.get("view")) ? (params.get("view") as View) : "envelopes";
+  const go = (m: string, v: View) => setParams({
+    ...(m === monthOf() ? {} : { month: m }), ...(v === "envelopes" ? {} : { view: v }),
+  }, { replace: true });
+  const setMonth = (m: string) => go(m, view);
 
   const [data, setData] = useState<MonthData | null>(null);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
+  const [docs, setDocs] = useState<TaxDocument[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      setData(await loadMonth(month));
+      const [d, v, td] = await Promise.all([loadMonth(month), listVendors(), listTaxDocuments(Number(month.slice(0, 4)))]);
+      setData(d);
+      setVendors(v);
+      setDocs(td);
       setError(null);
     } catch (err) {
       setError(errorMessage(err));
@@ -45,7 +68,7 @@ export default function BudgetPage() {
     reload();
   }, [reload]);
 
-  useEffect(() => subscribeAll(["envelopes", "budgets", "allocations", "transactions"], reload), [reload]);
+  useEffect(() => subscribeAll(["envelopes", "budgets", "allocations", "transactions", "vendors"], reload), [reload]);
 
   const summary = useMemo(
     () => data && summarize(data.envelopes, data.allocations, data.transactions, data.carried,
@@ -58,6 +81,7 @@ export default function BudgetPage() {
   const [adding, setAdding] = useState<TransactionKind | null>(null);
   const [editIncome, setEditIncome] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [details, setDetails] = useState<Transaction | null>(null);
 
   const sorted = useMemo(() => {
     if (!summary) return [];
@@ -83,6 +107,23 @@ export default function BudgetPage() {
         </div>
       )}
 
+      <div className="mt-5 flex justify-center">
+        <div className="inline-flex rounded-full bg-[rgba(106,93,123,.08)] p-1 font-black" role="tablist" aria-label="Budget views">
+          {VIEWS.map((v) => (
+            <button key={v.key} type="button" role="tab" aria-selected={view === v.key} onClick={() => go(month, v.key)}
+              className={cx("rounded-full px-4 py-2 sm:px-5", view === v.key && "bg-white shadow")}>
+              <span aria-hidden="true">{v.emoji}</span> {v.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {view === "vendors" ? (
+        <VendorsView month={month} />
+      ) : view === "taxes" ? (
+        <TaxesView key={month.slice(0, 4)} initialYear={Number(month.slice(0, 4))} />
+      ) : (
+      <>
       <div className="mt-6"><ErrorNote message={error} /></div>
 
       {!data ? (
@@ -121,15 +162,23 @@ export default function BudgetPage() {
             </button>
           </div>
 
-          <ActivityList data={data} summary={summary} />
+          <ActivityList data={data} summary={summary} vendors={vendors} docs={docs} onOpen={setDetails} />
         </>
+      )}
+      </>
       )}
 
       {data?.budget && selected && (
         <EnvelopeModal s={selected} budgetId={data.budget.id} month={month}
           onClose={() => setOpenEnvelope(null)}
           onEdit={() => { setEditing(selected.envelope); setOpenEnvelope(null); }}
+          onOpenTx={(t) => { setDetails(t); setOpenEnvelope(null); }}
           onChanged={reload} />
+      )}
+
+      {data && (
+        <TransactionDetails tx={details} envelopes={data.envelopes} vendors={vendors}
+          onClose={() => setDetails(null)} onChanged={reload} />
       )}
 
       <EnvelopeForm open={editing !== null} envelope={editing === "new" ? null : editing}
@@ -312,8 +361,9 @@ function EnvelopeCard({ s, index, onOpen }: { s: EnvelopeSummary; index: number;
 
 // ---------- Envelope details ----------
 
-function EnvelopeModal({ s, budgetId, month, onClose, onEdit, onChanged }: {
-  s: EnvelopeSummary; budgetId: string; month: string; onClose: () => void; onEdit: () => void; onChanged: () => void;
+function EnvelopeModal({ s, budgetId, month, onClose, onEdit, onOpenTx, onChanged }: {
+  s: EnvelopeSummary; budgetId: string; month: string; onClose: () => void; onEdit: () => void;
+  onOpenTx: (t: Transaction) => void; onChanged: () => void;
 }) {
   const color = (s.envelope.color || "lilac") as Color;
   const annual = isAnnual(s.envelope);
@@ -412,7 +462,9 @@ function EnvelopeModal({ s, budgetId, month, onClose, onEdit, onChanged }: {
             {s.transactions.map((t) => (
               <li key={t.id} className="flex items-center gap-3 rounded-2xl bg-white/70 px-4 py-2">
                 <span className="w-14 text-xs font-extrabold opacity-70">{shortDate(t.date)}</span>
-                <span className="flex-1 truncate font-bold">{t.payee || t.note || (t.kind === "income" ? "Money back" : "Spent")}</span>
+                <button type="button" className="flex-1 truncate text-left font-bold hover:underline" onClick={() => onOpenTx(t)}>
+                  {t.payee || t.note || (t.kind === "income" ? "Money back" : "Spent")}
+                </button>
                 <span className={cx("num font-black", t.kind === "income" && "text-[#4c9a63]")}>
                   {t.kind === "income" ? "+" : ""}{money(t.amount, { cents: true })}
                 </span>
@@ -462,6 +514,7 @@ function EnvelopeForm({ open, envelope, budgetId, count, onClose, onSaved }: {
   const [period, setPeriod] = useState<"monthly" | "annual">("monthly");
   const [goal, setGoal] = useState("");
   const [opening, setOpening] = useState("");
+  const [tax, setTax] = useState<TaxCategory | "">("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -477,6 +530,7 @@ function EnvelopeForm({ open, envelope, budgetId, count, onClose, onSaved }: {
     setPeriod(envelope?.period === "annual" ? "annual" : "monthly");
     setGoal(envelope?.goal ? String(envelope.goal) : "");
     setOpening(envelope?.opening_date ? String(envelope.opening_balance ?? 0) : "");
+    setTax(envelope?.tax_category ?? "");
     setError(null);
   }, [open, envelope, count]);
 
@@ -487,6 +541,7 @@ function EnvelopeForm({ open, envelope, budgetId, count, onClose, onSaved }: {
     const data = {
       name: name.trim(), emoji: emoji.trim(), color, group, default_amount: parseMoney(amount),
       rollover: rollover || period === "annual", archived, period, goal: period === "annual" ? parseMoney(goal) : 0,
+      tax_category: tax,
       ...(envelope?.opening_date ? { opening_balance: parseMoney(opening) } : {}),
     };
     try {
@@ -539,6 +594,9 @@ function EnvelopeForm({ open, envelope, budgetId, count, onClose, onSaved }: {
             value={opening} onChange={(e) => setOpening(e.target.value)}
             hint="Set when you imported your history. The envelope's balance counts from here." />
         )}
+        <Select label="Tax" value={tax} onChange={(e) => setTax(e.target.value as TaxCategory)}
+          hint="Spending from this envelope counts toward this at tax time. A vendor or a single payment can still say otherwise."
+          options={[{ value: "", label: "Not deductible" }, ...TAX_CATEGORIES.map((c) => ({ value: c, label: `${TAX_CATEGORY_EMOJI[c]} ${TAX_CATEGORY_LABELS[c]}` }))]} />
         <ColorPicker value={color} onChange={setColor} />
         {period === "monthly" && (
           <Toggle label="Roll leftover cash into next month" checked={rollover} onChange={setRollover}
@@ -660,8 +718,13 @@ function IncomeForm({ open, budgetId, value, onClose, onSaved }: {
   );
 }
 
-function ActivityList({ data, summary }: { data: MonthData; summary: ReturnType<typeof summarize> }) {
+function ActivityList({ data, summary, vendors, docs, onOpen }: {
+  data: MonthData; summary: ReturnType<typeof summarize>; vendors: Vendor[]; docs: TaxDocument[]; onOpen: (t: Transaction) => void;
+}) {
   const names = new Map(data.envelopes.map((e) => [e.id, e]));
+  const vendorById = new Map(vendors.map((v) => [v.id, v]));
+  const year = Number(data.transactions[0]?.date.slice(0, 4)) || 0;
+  const tagged = new Map<string, TaxRow>(taxRows(data.transactions, vendorById, names, docs, year).map((r) => [r.tx.id, r]));
   if (data.transactions.length === 0) return null;
   return (
     <>
@@ -670,25 +733,34 @@ function ActivityList({ data, summary }: { data: MonthData; summary: ReturnType<
         <ul className="divide-y-2 divide-[rgba(106,93,123,.08)]">
           {data.transactions.slice(0, 50).map((t) => {
             const env = names.get(t.envelope);
+            const vendor = vendorById.get(t.vendor);
             const income = t.kind === "income";
+            const tax = tagged.get(t.id);
             return (
-              <li key={t.id} className="flex items-center gap-3 px-2 py-3">
-                <span className={cx("flex h-10 w-10 flex-none items-center justify-center rounded-full text-lg",
-                  `c-${income && !env ? "butter" : env?.color || "lilac"}`)} style={{ background: "var(--c)" }} aria-hidden="true">
-                  {income && !env ? "💰" : env?.emoji || "✉️"}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-extrabold">{t.payee || (income ? "Income" : "Spent")}</span>
-                  <span className="block text-xs font-bold opacity-70">
-                    {shortDate(fromPbDate(t.date))} · {env ? (income ? `Into ${env.name}` : env.name) : income ? "Income" : "No envelope"}
-                    {t.account && <> · {t.account}</>}
-                    {t.paystub_status === "needs_paystub" && <span className="pill c-butter ml-2">needs paystub</span>}
-                    {t.paystub_status === "matched" && <span className="ml-2 opacity-70">· paystub ✓</span>}
+              <li key={t.id}>
+                <button type="button" onClick={() => onOpen(t)}
+                  className="flex w-full items-center gap-3 rounded-2xl px-2 py-3 text-left hover:bg-white/60">
+                  <span className={cx("flex h-10 w-10 flex-none items-center justify-center rounded-full text-lg",
+                    `c-${income && !env ? "butter" : env?.color || "lilac"}`)} style={{ background: "var(--c)" }} aria-hidden="true">
+                    {income && !env ? "💰" : env?.emoji || "✉️"}
                   </span>
-                </span>
-                <span className={cx("num font-black", income && "text-[#4c9a63]")}>
-                  {income ? "+" : "−"}{money(t.amount, { cents: true })}
-                </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-extrabold" title={vendor && t.payee ? t.payee : undefined}>
+                      {vendor ? `${vendor.emoji ? vendor.emoji + " " : ""}${vendor.name}` : t.payee || (income ? "Income" : "Spent")}
+                      {tax && <TaxBadge category={tax.category} warn={tax.needsAck} />}
+                    </span>
+                    <span className="block text-xs font-bold opacity-70">
+                      {shortDate(fromPbDate(t.date))} · {env ? (income ? `Into ${env.name}` : env.name) : income ? "Income" : "No envelope"}
+                      {t.account && <> · {t.account}</>}
+                      {t.paystub_status === "needs_paystub" && <span className="pill c-butter ml-2">needs paystub</span>}
+                      {t.paystub_status === "matched" && <span className="ml-2 opacity-70">· paystub ✓</span>}
+                      {!vendor && t.payee && !t.earner && (!income || env) && <span className="pill c-white ml-2">who is this?</span>}
+                    </span>
+                  </span>
+                  <span className={cx("num font-black", income && "text-[#4c9a63]")}>
+                    {income ? "+" : "−"}{money(t.amount, { cents: true })}
+                  </span>
+                </button>
               </li>
             );
           })}

@@ -16,6 +16,13 @@ Budgets, debts and assets in one place. A small self-hosted web app with three t
   **Annual envelopes** (Christmas, donations) save toward a yearly goal and sit in their own
   section under the monthly ones. **Import history** reads a CSV export such as Goodbudget's:
   spending, refunds, split transactions, income and envelope transfers.
+  **Vendors** show who the money goes to. Each transaction is matched to a vendor from the
+  text on the bank statement (teach it once with "Who is this?"), which gives spending by
+  vendor and recurring payments, flagged when one is missed or changes.
+  **Taxes** track deductible spending from the budget for itemizing: donations, out-of-pocket
+  medical, child care and traditional IRA contributions. Tag a vendor or an envelope once,
+  attach receipts or a charity's year-end statement, and the year-end view applies the AGI
+  floors and limits and compares itemizing with the standard deduction.
 - **Debts**: every loan and card with its balance, APR, monthly payment, payment history
   and its own payoff date. 401(k) loans paid from a paycheck go down automatically with
   each paystub, and the mortgage is listed separately.

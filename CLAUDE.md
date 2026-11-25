@@ -24,7 +24,13 @@ npm run test:e2e   # Playwright walkthrough; needs RESET=1 npm run pb first
 - Data belongs to a household: every data collection has `owner` (the household head's user id)
   and rules `owner = @request.auth.household`. Relations must also check the related record's
   owner in create/update rules. Server routes use `lib.householdOf(e.auth)`, never `e.auth.id`.
-- Business math (budget totals, loan payoff, equity, paystub reading, history import) lives in `app/lib/` and is unit tested.
+- Business math (budget totals, loan payoff, equity, paystub reading, history import, vendor matching,
+  recurring payments, tax floors and limits) lives in `app/lib/` and is unit tested.
+- Vendor matching runs server-side before a transaction is saved (`applyVendor` in `pb_hooks/finance/lib.js`),
+  using `pb_hooks/finance/match.js`. `app/lib/vendors.ts` has the same functions for the browser;
+  `testing/unit/vendors.test.ts` runs both on the same cases, so change them together.
+- Tax figures for each year are in `PUBLISHED_FIGURES` in `app/lib/tax.ts`; a year that isn't there copies
+  the latest and shows as unconfirmed until someone checks it.
 - Hook handlers run in isolated runtimes: `require(\`${__hooks}/finance/lib.js\`)` inside each handler.
 - Styling: Tailwind plus the component classes in `app/app.css` (`.chunk`, `.btn`, `.tray`,
   `.c-<hue>` sets `--c`/`--cd`). Pastel palette only; colours come from those tokens.
