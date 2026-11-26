@@ -185,7 +185,9 @@ server compares its `amount` with that earner's most recent paystub's `deposit` 
   earner with the same `deposit` (or net pay) within a week of the deposit, it is tied to the deposit and
   the status becomes `matched`. The nearest such deposit wins, and it can also be income with
   no `earner` and no `envelope` (imported), which then gets the earner, or a deposit that
-  only has a copied paystub, which the real one replaces.
+  only has a copied paystub, which the real one replaces. A copied paystub that has a
+  `file` (its own PDF, saved by a bulk upload) counts as that paycheck's paystub, so its
+  deposit is left alone unless the new paystub names it in `transaction`.
 
 - **Backfill:** `POST /api/paystubs/{id}/backfill` copies a paystub to every deposit from
   the same earner that is still `needs_paystub` and within one cent (above or below) of its
@@ -233,6 +235,50 @@ Uploading a paystub with its file is a `multipart/form-data` create on `paystubs
 (field `file`); then create its lines on `paystub_lines`. Files are protected: get a file
 token from `POST /api/files/token` and add `?token=...` to the file URL.
 
+### Bulk upload (a zip of paystub PDFs)
+
+The app's **Zip of paystubs** button reads every PDF in a zip in the browser, then sends
+them all at once. The server saves all of them or none.
+
+```http
+POST /api/paystubs/bulk
+Content-Type: multipart/form-data
+
+earner=<earner id>
+stubs=[{ "name": "2026-11-13.pdf", "file": 0, "pay_date": "2026-11-13",
+         "period_start": "2026-10-27", "period_end": "2026-11-09",
+         "gross": 4791.67, "net": 2925.35, "deposit": 3188.52,
+         "ytd_gross": 105416.74, "ytd_net": 64357.70,
+         "lines": [{ "category": "federal_tax", "label": "Federal Income Tax", "amount": 542.23,
+                     "debt": "", "asset": "", "employer_paid": false }] }, ...]
+files=<PDF>   (one part per stub; `file` is its position, from 0)
+```
+
+In pay-date order, each stub:
+
+- **Already in the app:** the earner has a paystub paid within 4 days of `pay_date` with
+  the same check amount (within a cent). That's usually one the server copied onto a
+  matching deposit (`source: "repeat"`). Its amounts are kept; the PDF is saved in its
+  `file` (if it has none yet) and `ytd_gross`/`ytd_net` are filled in. If the paystub found
+  is a copy with a *different* check amount, the upload fails: the copy was wrong.
+- **New:** saved like an uploaded paystub (`source: "upload"`): it is tied to its deposit,
+  backfills matching paychecks (see above), and its loan and contribution lines move
+  their debts and assets.
+
+Then, when the stub prints year-to-date gross or net pay, that figure is checked against
+the paystubs in the app: the last earlier paystub this year with the figure printed, plus
+every paystub since (copies included), up to and including this one. With no earlier
+figure, it counts from January 1st, but only if the app has this earner's paystubs from
+the first pay period of the year; otherwise it's not checked. Each copied paystub may be
+a cent off. If a figure has drifted, the request fails with `400` and a message naming
+the stub and both amounts, and **everything** the upload did (paystubs, PDFs, deposit
+links, backfilled copies, loan payments, asset changes) is rolled back.
+
+Returns `{ "results": [ { index, name, pay_date, action, source, filled, paystub, ytd } ] }`,
+in the order sent. `action` is `added`, `attached` (PDF saved with the paystub already
+there) or `already` (that paystub already had a PDF). `ytd.gross` / `ytd.net` are
+`{ checked, printed, expected, off, ok }` when the stub printed them.
+
 ### Reading paystubs
 
 The app reads paystub PDFs in the browser. If it can't make sense of one (or the file is
@@ -241,7 +287,7 @@ an image) and an OpenClaw agent is configured on the server, it asks the agent i
 | Method | Path | |
 | --- | --- | --- |
 | `GET` | `/api/paystubs/reader` | `{ "agent": true }` when an OpenClaw agent is configured |
-| `POST` | `/api/paystubs/read` | Body `{ "filename", "media_type", "data": "<base64>" }`. Returns `{ pay_date, period_start, period_end, gross, net, lines: [{ label, category, amount }] }`. Saves nothing. |
+| `POST` | `/api/paystubs/read` | Body `{ "filename", "media_type", "data": "<base64>" }`. Returns `{ pay_date, period_start, period_end, gross, net, lines: [{ label, category, amount }], ytd_gross, ytd_net }`. Saves nothing. |
 
 The server calls the agent's OpenResponses endpoint (`POST {OPENCLAW_URL}/v1/responses`)
 with the file as an `input_file` part. Set these on the container:
@@ -571,6 +617,7 @@ One per household per `year`. Percentages are in percent (`7.5`).
 | `gross` | number | |
 | `net` | number | Take-home pay |
 | `deposit` | number | What lands in the bank: `net` plus reimbursements (the check amount). 0 = same as `net` |
+| `ytd_gross`, `ytd_net` | number | Year-to-date gross and net pay printed on the stub. 0 = not printed. Used by the bulk upload's check |
 | `file` | file (PDF or image, 15 MB, protected) | |
 | `source` | `upload` `manual` `repeat` | `repeat` = copied by the server |
 | `transaction` | relation → transactions | The deposit it explains |

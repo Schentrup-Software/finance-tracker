@@ -2,7 +2,7 @@
 // paystub PDF into gross pay, net pay, pay date and deduction lines. Every
 // reading is shown to the person to check before it's saved.
 
-import type { Color, PaystubCategory } from "~/backend/types";
+import type { Asset, Color, Debt, PaystubCategory } from "~/backend/types";
 import { round2 } from "./money";
 
 export const CATEGORY_LABELS: Record<PaystubCategory, string> = {
@@ -107,6 +107,13 @@ export interface PaystubReading {
   reimbursements: ReadLine[];
   /** What was deposited, if the stub says ("Check Amount"): net pay plus reimbursements. */
   check: number | null;
+  /** Year-to-date gross and net pay, when the stub prints them. */
+  ytd: YearToDate | null;
+}
+
+export interface YearToDate {
+  gross: number | null;
+  net: number | null;
 }
 
 /**
@@ -246,14 +253,60 @@ function firstAmount(segs: ReturnType<typeof segments>, label: RegExp, exclude?:
   return null;
 }
 
+const GROSS_LABEL = /gross\s*(pay|earnings|wages)?|total\s*(earnings|gross)/i;
+const NET_LABEL = /net\s*(pay|check|amount|deposit)|take[\s-]*home|\bnet\b/i;
+const YTD_LABEL = /\bytd\b|year[\s-]*to[\s-]*date/i;
+
+const near = (a: number, b: number) => Math.abs(Math.abs(a) - Math.abs(b)) < 0.005;
+
+/**
+ * The year-to-date figure for a total such as gross pay, when the stub prints one.
+ * Understands a row with this period then year to date ("Gross Pay 3,500.00 77,000.00",
+ * hours or a rate may come first), a row of its own ("YTD Gross 77,000.00"), and a
+ * summary at the top laid out in columns (a "Gross Pay | Net Pay" heading row, then
+ * "Current" and "YTD" rows).
+ */
+function ytdOf(rows: string[][], segs: ReturnType<typeof segments>, label: RegExp, exclude: RegExp, current: number | null): number | null {
+  for (const s of segs) {
+    if (!label.test(s.label) || !YTD_LABEL.test(s.label) || exclude.test(s.label.replace(YTD_LABEL, ""))) continue;
+    if (s.amounts.length === 1) return Math.abs(s.amounts[0]);
+  }
+  if (current !== null) {
+    for (const s of segs) {
+      if (!label.test(s.label) || exclude.test(s.label) || YTD_LABEL.test(s.label)) continue;
+      const i = s.amounts.findIndex((a) => near(a, current));
+      const next = i >= 0 ? s.amounts[i + 1] : undefined;
+      if (next !== undefined && Math.abs(next) + 0.005 >= current) return Math.abs(next);
+    }
+  }
+  // Columns: a heading row naming the totals, then a "YTD" row under it.
+  for (let h = 0; h < rows.length; h++) {
+    const col = rows[h].findIndex((c) => label.test(c) && !exclude.test(c) && moneyIn(c).length === 0);
+    if (col < 0) continue;
+    for (let r = h + 1; r < Math.min(rows.length, h + 4); r++) {
+      const row = rows[r];
+      if (!row.length || !YTD_LABEL.test(row[0]) || moneyIn(row[0]).length) continue;
+      const amounts = row.slice(1).map((c) => moneyIn(c)[0]);
+      // The heading may or may not have a cell over the row labels.
+      const offset = rows[h].length === row.length ? 1 : 0;
+      const v = amounts[col - offset];
+      if (v !== undefined) return Math.abs(v);
+    }
+  }
+  return null;
+}
+
 /** Reads a paystub's text (rows of cells, as laid out on the page). */
 export function readPaystub(rows: string[][]): PaystubReading {
   const segs = segments(rows);
   const rowsText = rows.map((r) => r.join(" ").replace(/\s+/g, " "));
 
   const check = firstAmount(segs, CHECK_AMOUNT);
-  const gross = firstAmount(segs, /gross\s*(pay|earnings|wages)?|total\s*(earnings|gross)/i, /taxable|ytd only|year/i);
-  const net = firstAmount(segs, /net\s*(pay|check|amount|deposit)|take[\s-]*home|\bnet\b/i, /ytd only/i);
+  const gross = firstAmount(segs.filter((s) => !YTD_LABEL.test(s.label)), GROSS_LABEL, /taxable|ytd only|year/i);
+  const net = firstAmount(segs.filter((s) => !YTD_LABEL.test(s.label)), NET_LABEL, /ytd only/i);
+  const ytdGross = ytdOf(rows, segs, GROSS_LABEL, /taxable/i, gross);
+  const ytdNet = ytdOf(rows, segs, NET_LABEL, /taxable/i, net);
+  const ytd = ytdGross !== null || ytdNet !== null ? { gross: ytdGross, net: ytdNet } : null;
 
   let pay_date = dateAfter(rowsText, /(pay|check|advice|payment|deposit)\s*date|pay\s*day|date\s*paid/i);
   let period_start = dateAfter(rowsText, /period\s*(begin(ning)?|start(ing)?|from)|(pay\s*)?period\s*(:)?/i);
@@ -319,7 +372,7 @@ export function readPaystub(rows: string[][]): PaystubReading {
     reimbursements.push({ label: "Reimbursements", category: "reimbursement", amount: round2(check - net) });
   }
 
-  return { pay_date, period_start, period_end, gross, net, lines, employer, reimbursements, check };
+  return { pay_date, period_start, period_end, gross, net, lines, employer, reimbursements, check, ytd };
 }
 
 /** What lands in the bank: net pay plus reimbursements. */
@@ -364,6 +417,7 @@ export function fromAgent(json: any): PaystubReading {
   const reading: PaystubReading = {
     pay_date: date(json?.pay_date), period_start: date(json?.period_start), period_end: date(json?.period_end),
     gross: num(json?.gross), net: num(json?.net), check: num(json?.check_amount),
+    ytd: num(json?.ytd_gross) !== null || num(json?.ytd_net) !== null ? { gross: num(json?.ytd_gross), net: num(json?.ytd_net) } : null,
     lines: readLines(json?.lines, () => true),
     // Employer-paid taxes aren't benefits, so they are dropped.
     employer: readLines(
@@ -378,4 +432,61 @@ export function fromAgent(json: any): PaystubReading {
     reading.reimbursements.push({ label: "Reimbursements", category: "reimbursement", amount: round2(check - net) });
   }
   return reading;
+}
+
+// ---------- Linking lines to loans and accounts ----------
+
+export interface LinkableLine {
+  category: PaystubCategory;
+  label: string;
+  amount: number;
+  debt: string;
+  asset: string;
+  employer_paid?: boolean;
+}
+
+/**
+ * Links loan lines to their debt and contribution lines to their account: the
+ * same one as on the last paystub, else the only one of the right kind. An
+ * employer 401(k) or HSA contribution usually lands in the same account as the
+ * employee's own (a traditional match can go into the account that holds Roth
+ * contributions), so it follows the employee line's account.
+ */
+export function linkAccounts<L extends LinkableLine>(
+  ls: L[], previous: LinkableLine[], debts: Pick<Debt, "id" | "type" | "balance">[], assets: Pick<Asset, "id" | "type">[],
+): L[] {
+  const k401 = debts.filter((d) => d.type === "401k_loan" && d.balance > 0);
+  const samePrev = (l: L, key: "debt" | "asset") => {
+    const same = previous.filter((p) => p[key] && p.category === l.category && !!p.employer_paid === !!l.employer_paid);
+    return same.find((p) => p.label === l.label) ?? same[0];
+  };
+  const linked = ls.map((l) => {
+    if (isLoanCategory(l.category) && !l.debt && !l.employer_paid) {
+      return { ...l, debt: samePrev(l, "debt")?.debt ?? (l.category === "401k_loan" && k401.length === 1 ? k401[0].id : "") };
+    }
+    if (isContributionCategory(l.category) && !l.asset) {
+      const types = CONTRIBUTION_ASSET_TYPES[l.category] ?? [];
+      const fits = assets.filter((a) => types.includes(a.type));
+      const prev = samePrev(l, "asset")?.asset;
+      return { ...l, asset: prev ?? (fits.length === 1 && !l.employer_paid ? fits[0].id : "") };
+    }
+    return l;
+  });
+  return linked.map((l) => {
+    if (!l.employer_paid || l.asset || !isContributionCategory(l.category)) return l;
+    const group = groupOf(l.category).key;
+    const own = linked.find((o) => !o.employer_paid && o.asset && groupOf(o.category).key === group);
+    const types = CONTRIBUTION_ASSET_TYPES[l.category] ?? [];
+    const fits = assets.filter((a) => types.includes(a.type));
+    return { ...l, asset: own?.asset ?? (fits.length === 1 ? fits[0].id : "") };
+  });
+}
+
+/** Every line of a reading (deductions, employer contributions, reimbursements), ready to save. */
+export function readingLines(r: PaystubReading) {
+  return [
+    ...r.lines.map((l) => ({ ...l, debt: "", asset: "" })),
+    ...r.employer.map((l) => ({ ...l, debt: "", asset: "", employer_paid: true })),
+    ...r.reimbursements.map((l) => ({ ...l, debt: "", asset: "" })),
+  ];
 }

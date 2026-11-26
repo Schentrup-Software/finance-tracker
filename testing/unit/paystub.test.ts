@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { datesIn, depositAmount, fromAgent, isContributionCategory, readPaystub, readingLooksGood, segments, totalsByCategory, totalsByGroup, unexplained } from "~/lib/paystub";
+import { datesIn, depositAmount, fromAgent, isContributionCategory, linkAccounts, readPaystub, readingLooksGood, segments, totalsByCategory, totalsByGroup, unexplained } from "~/lib/paystub";
 import { toRows } from "~/lib/pdfText";
 
 // Rows of cells as pdfText produces them, modelled on common payroll layouts.
@@ -219,5 +219,60 @@ describe("year-to-date totals", () => {
     expect(isContributionCategory("401k")).toBe(true);
     expect(isContributionCategory("medical")).toBe(false);
     expect(isContributionCategory("401k_loan")).toBe(false);
+  });
+});
+
+describe("year-to-date pay printed on the stub", () => {
+  it("reads it from the column after this period's amount", () => {
+    const r = readPaystub([
+      ...ADP_LIKE,
+      ["Summary", "this period", "year to date"],
+      ["Net Pay", "2,313.10", "50,888.20"],
+    ]);
+    expect(r.ytd).toEqual({ gross: 77000, net: 50888.2 });
+    expect(r.gross).toBe(3500);
+    expect(r.net).toBe(2313.1);
+  });
+
+  it("reads rows labelled YTD", () => {
+    const r = readPaystub([["Gross Pay", "3,500.00"], ["YTD Gross", "77,000.00"], ["Net Pay", "2,500.00"], ["YTD Net Pay", "55,000.00"]]);
+    expect(r.gross).toBe(3500);
+    expect(r.net).toBe(2500);
+    expect(r.ytd).toEqual({ gross: 77000, net: 55000 });
+  });
+
+  it("reads a summary at the top laid out in columns", () => {
+    const r = readPaystub([
+      ["", "Gross Pay", "Taxes", "Deductions", "Net Pay"],
+      ["Current", "$4,791.67", "$1,100.00", "$766.32", "$2,925.35"],
+      ["YTD", "$105,416.74", "$24,200.00", "$16,859.04", "$64,357.70"],
+      ["Pay Date", "11/13/2026"],
+    ]);
+    expect(r.ytd).toEqual({ gross: 105416.74, net: 64357.7 });
+  });
+
+  it("is null when the stub has no year-to-date totals", () => {
+    expect(readPaystub([["Gross Pay", "3,500.00"], ["Net Pay", "2,500.00"]]).ytd).toBeNull();
+  });
+
+  it("comes through from the OpenClaw agent", () => {
+    expect(fromAgent({ gross: 1, net: 1, ytd_gross: 77000, ytd_net: "50888.20" }).ytd).toEqual({ gross: 77000, net: 50888.2 });
+    expect(fromAgent({ gross: 1, net: 1 }).ytd).toBeNull();
+  });
+});
+
+describe("linking lines to loans and accounts", () => {
+  const debts = [{ id: "loan", type: "401k_loan", balance: 5000 }];
+  const assets = [{ id: "k401", type: "401k" }, { id: "hsa", type: "hsa" }];
+  const line = (category: any, extra = {}) => ({ category, label: "", amount: 1, debt: "", asset: "", ...extra });
+
+  it("uses the only loan or account of the right kind, and the employee's account for the employer's", () => {
+    const linked = linkAccounts([line("401k_loan"), line("401k"), line("401k", { employer_paid: true }), line("medical")], [], debts as any, assets as any);
+    expect(linked.map((l) => l.debt || l.asset)).toEqual(["loan", "k401", "k401", ""]);
+  });
+
+  it("prefers what the last paystub used", () => {
+    const linked = linkAccounts([line("hsa", { label: "HSA" })], [line("hsa", { label: "HSA", asset: "other-hsa" })], debts as any, assets as any);
+    expect(linked[0].asset).toBe("other-hsa");
   });
 });

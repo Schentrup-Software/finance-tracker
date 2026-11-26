@@ -309,6 +309,22 @@ routerAdd("POST", "/api/paystubs/{id}/backfill", (e) => {
   return e.json(200, { filled: lib.backfillPaystub(e.app, lib.householdOf(e.auth), e.request.pathValue("id")) });
 }, $apis.requireAuth("users"));
 
+// POST /api/paystubs/bulk  (multipart) earner=<id>, stubs=<JSON array>, files=<PDFs>
+// Saves paystubs read from a zip of PDFs in one go, or none of them: see
+// bulkUploadPaystubs in finance/lib.js. -> { results: [ { name, pay_date, action, filled, ytd } ] }
+routerAdd("POST", "/api/paystubs/bulk", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  const body = e.requestInfo().body || {};
+  const one = (v) => (Array.isArray(v) ? v[0] : v);
+  let stubs = one(body.stubs);
+  if (typeof stubs === "string") {
+    try { stubs = JSON.parse(stubs); } catch (_) { throw new BadRequestError("`stubs` isn't valid JSON."); }
+  }
+  let files = [];
+  try { files = e.findUploadedFiles("files") || []; } catch (_) { files = []; }
+  return e.json(200, lib.bulkUploadPaystubs(e.app, lib.householdOf(e.auth), String(one(body.earner) || ""), stubs, files));
+}, $apis.requireAuth("users"), $apis.bodyLimit(200 << 20));
+
 // ---------- Paystub reader fallback (OpenClaw) ----------
 
 // Whether a fallback reader is configured, so the app can offer it.

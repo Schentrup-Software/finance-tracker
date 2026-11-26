@@ -81,3 +81,59 @@ export function makeZip(entries: ZipEntry[]): Uint8Array<ArrayBuffer> {
   for (const p of [...parts, ...central, end]) { out.set(p, at); at += p.length; }
   return out;
 }
+
+// ---------- Reading a ZIP ----------
+
+/**
+ * Reads the files out of a ZIP archive (as made by Finder, Windows or `zip`):
+ * stored or deflated entries, read through the central directory. Folders,
+ * macOS resource forks (__MACOSX/, ._name) and hidden files are left out.
+ * Names keep their folder path.
+ */
+export async function readZip(bytes: Uint8Array): Promise<ZipEntry[]> {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // The end-of-central-directory record is in the last 64 KB (after an optional comment).
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 0xffff); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("That file isn't a ZIP archive.");
+  const count = view.getUint16(eocd + 10, true);
+  let at = view.getUint32(eocd + 16, true);
+  if (count === 0xffff || at === 0xffffffff) throw new Error("That ZIP is too large to read here (ZIP64). Zip fewer files at a time.");
+
+  const utf8 = new TextDecoder("utf-8");
+  const latin = new TextDecoder("latin1");
+  const out: ZipEntry[] = [];
+  for (let n = 0; n < count; n++) {
+    if (view.getUint32(at, true) !== 0x02014b50) throw new Error("That ZIP archive is damaged.");
+    const flags = view.getUint16(at + 8, true);
+    const method = view.getUint16(at + 10, true);
+    const size = view.getUint32(at + 20, true);
+    const nameLen = view.getUint16(at + 28, true);
+    const extraLen = view.getUint16(at + 30, true);
+    const commentLen = view.getUint16(at + 32, true);
+    const local = view.getUint32(at + 42, true);
+    const rawName = bytes.subarray(at + 46, at + 46 + nameLen);
+    const name = (flags & 0x0800 ? utf8 : latin).decode(rawName);
+    at += 46 + nameLen + extraLen + commentLen;
+
+    const base = name.split("/").pop() ?? "";
+    if (name.endsWith("/") || name.startsWith("__MACOSX/") || !base || base.startsWith(".")) continue;
+    if (flags & 0x0001) throw new Error(`${base} is password-protected. Zip the paystubs without a password.`);
+
+    const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+    const raw = bytes.subarray(start, start + size);
+    let data: Uint8Array;
+    if (method === 0) data = raw.slice();
+    else if (method === 8) data = await inflateRaw(raw);
+    else throw new Error(`${base} is compressed in a way this can't read. Zip it with the usual settings.`);
+    out.push({ name, data });
+  }
+  return out;
+}
+
+async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([data as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}

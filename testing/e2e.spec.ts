@@ -1,5 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
+import { createRequire } from "node:module";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { makeZip } from "../app/lib/zip";
+
+const { paystubHtml } = createRequire(import.meta.url)("./fixtures/make-paystub.cjs");
 
 const PAYSTUB_PDF = fileURLToPath(new URL("./fixtures/paystub.pdf", import.meta.url));
 const HISTORY_CSV = fileURLToPath(new URL("./fixtures/history.csv", import.meta.url));
@@ -202,6 +209,61 @@ test("paychecks: read a PDF paystub, then match the next paycheck to the cent", 
   await page.getByRole("link", { name: /Debts/ }).click();
   await expect(page.getByText("$5,757.72")).toBeVisible();
   await expect(page.getByText("From paycheck")).toBeVisible();
+});
+
+/** A zip of sample paystubs (see fixtures/make-paystub.cjs), saved to a temp file. */
+async function paystubZip(page: Page, name: string, stubs: object[]): Promise<string> {
+  const pdfPage = await page.context().newPage();
+  const entries = [];
+  for (const [i, s] of stubs.entries()) {
+    await pdfPage.setContent(paystubHtml(s));
+    entries.push({ name: `stubs/paystub-${i + 1}.pdf`, data: new Uint8Array(await pdfPage.pdf({ format: "Letter" })) });
+  }
+  await pdfPage.close();
+  const path = join(tmpdir(), name);
+  writeFileSync(path, makeZip(entries));
+  return path;
+}
+
+test("paychecks: upload a zip of paystubs, checked against year-to-date pay", async ({ page }) => {
+  await signIn(page);
+  await page.getByRole("link", { name: /Budget/ }).click();
+  await page.getByRole("tab", { name: /Income/ }).click();
+  await page.getByRole("tab", { name: /so far/ }).click();
+  await expect(page.getByText("$7,000")).toBeVisible(); // Nov 21 (uploaded) + Nov 28 (copied)
+
+  // Nov 28's paystub was copied from Nov 21's; Dec 5's year-to-date gross is $1,000 too high.
+  const nov28 = { begin: "11/15/2026", end: "11/28/2026", payDate: "11/28/2026", net: 2313.11, ytdGross: 80500, ytdNet: 53201.31 };
+  const drifted = await paystubZip(page, "drifted.zip", [
+    nov28,
+    { begin: "11/29/2026", end: "12/12/2026", payDate: "12/05/2026", net: 2313.1, ytdGross: 85000, ytdNet: 55514.41 },
+  ]);
+  await page.getByRole("button", { name: "Zip of paystubs" }).click();
+  let d = page.getByRole("dialog");
+  await d.getByLabel("Zip of paystubs").setInputFiles(drifted);
+  await expect(d.getByText("2 of 2 paystubs read for Joey.")).toBeVisible();
+  await expect(d.getByText("$80,500.00 gross so far this year")).toBeVisible();
+  await d.getByRole("button", { name: "Save 2 paystubs" }).click();
+  await expect(d.getByRole("alert")).toContainText("shows $85,000.00 gross pay so far this year, but the paystubs in the app add up to $84,000.00");
+  await expect(d.getByRole("alert")).toContainText("Nothing from this zip was saved.");
+  await shot(page, "06a-zip-drift");
+  await d.getByRole("button", { name: "Close" }).click();
+  await expect(page.getByText("$7,000")).toBeVisible(); // nothing added
+
+  const good = await paystubZip(page, "paystubs.zip", [
+    { begin: "11/29/2026", end: "12/12/2026", payDate: "12/05/2026", net: 2313.1, ytdGross: 84000, ytdNet: 55514.41 },
+    nov28,
+  ]);
+  await page.getByRole("button", { name: "Zip of paystubs" }).click();
+  d = page.getByRole("dialog");
+  await d.getByLabel("Zip of paystubs").setInputFiles(good);
+  await d.getByRole("button", { name: "Save 2 paystubs" }).click();
+  await expect(d.getByRole("status")).toContainText("1 new paystub, 1 PDF saved with paystubs already here.");
+  await expect(d.getByText("PDF saved with the paystub copied from an earlier one")).toBeVisible();
+  await expect(d.getByText("✓ Gross so far this year adds up ($84,000.00)")).toBeVisible();
+  await shot(page, "06b-zip-of-paystubs");
+  await d.getByRole("button", { name: "Done" }).click();
+  await expect(page.getByText("$10,500")).toBeVisible();
 });
 
 test("import history from a spreadsheet, with annual envelopes", async ({ page }) => {
