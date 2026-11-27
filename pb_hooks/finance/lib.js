@@ -1378,6 +1378,16 @@ function revokeApiToken(app, ownerId, id) {
   } catch (_) {}
   if (!t || t.get("owner") !== ownerId) throw new NotFoundError("That token isn't in your household.");
   app.delete(t);
+  closeTokenRealtime(app, t.id);
+}
+
+/** Closes the realtime connections a token subscribed (tagged in onRealtimeSubscribeRequest). */
+function closeTokenRealtime(app, tokenId) {
+  const clients = app.subscriptionsBroker().clients();
+  for (const id of Object.keys(clients)) {
+    const c = clients[id];
+    if (c && c.get("apiTokenId") === tokenId) c.discard();
+  }
 }
 
 // ---------- SimpleFIN Bridge ----------

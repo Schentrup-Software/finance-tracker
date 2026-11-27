@@ -29,14 +29,17 @@ Authorization: ft_...
 (`Authorization: Bearer ft_...` works too.) In n8n, store it as a **Header Auth**
 credential with the name `Authorization`.
 
-- A token acts as the household member who made it, so it can do anything they can do in
-  the app: the collection endpoints, `/api/sync/...`, `/api/paystubs/...` and the rest of
-  this page. If the head of the household made it, that includes managing members.
+- A token acts as the household member who made it, so it can do anything they can do with
+  the household's data: the collection endpoints, `/api/sync/...`, `/api/paystubs/...`,
+  realtime and the rest of this page.
 - Tokens **never expire**, and changing a password doesn't affect them. Revoke one on the
   API tokens page and it stops working at once
   (`401`). Removing the member who made it revokes their tokens too.
-- A token can't list, make or revoke tokens, and can't be swapped for a regular sign-in
-  (`auth-refresh` answers `403`), so revoking a leaked token really ends it.
+- A token can't make anything that would outlive it: it can't list, make or revoke tokens,
+  add, remove or set the password of household members (even the head's token), start an
+  email change, or be swapped for a regular sign-in (`auth-refresh`). Those answer `403`,
+  so revoking a leaked token really ends it. Revoking also closes any realtime connection
+  the token subscribed.
 - A revoked or mistyped token gets `401` on every endpoint, even ones that are otherwise
   open, so a broken credential fails loudly instead of quietly seeing no data.
 
@@ -60,7 +63,9 @@ Content-Type: application/json
 ```
 
 Response: `{ "token": "eyJ...", "record": { "id": "...", ... } }`. Tokens last 7 days by
-default, so sign in at the start of each workflow run. In n8n: an **HTTP Request** node
+default, so sign in at the start of each workflow run. Sign-ins (for members and
+superusers) are limited to 10 a minute from one address; more get `429`. Behind a reverse
+proxy that can mean 10 a minute for everyone, which is one more reason to use an API token. In n8n: an **HTTP Request** node
 for this call, then pass `{{$json.token}}` as the `Authorization` header in later nodes.
 
 ### Option C: a superuser impersonation token
@@ -475,7 +480,7 @@ Household members are managed by the head:
 | `POST` | `/api/household/members/{id}/password` | `{ "password" }` | Sets a member's password |
 | `DELETE` | `/api/household/members/{id}` | | Removes a member's sign-in. The household's data stays |
 
-Anyone else gets `403` (not the head) or `404` (not in your household).
+Anyone else gets `403` (not the head, or an API token) or `404` (not in your household).
 
 ### `api_tokens` — API tokens
 
