@@ -589,10 +589,32 @@ export function updateSimplefinAccount(id: string, data: SimplefinAccountChoice)
   return pb.collection("simplefin_accounts").update<SimplefinAccount>(id, data);
 }
 
-/** The minute past the hour this server pulls at. */
-export async function simplefinMinute(): Promise<number> {
-  const res = await pb.send<{ minute: number }>("/api/simplefin", { method: "GET" });
-  return res.minute;
+export interface SimplefinStatus {
+  /** The minute past the hour this server pulls at. */
+  minute: number;
+  /** The household has a SimpleFIN connection. */
+  connected: boolean;
+  /** When someone chose to enter accounts by hand instead ("" if nobody has). */
+  skipped: string;
+}
+
+export function simplefinStatus(): Promise<SimplefinStatus> {
+  return pb.send<SimplefinStatus>("/api/simplefin", { method: "GET" });
+}
+
+/** Onboarding: the household will enter accounts by hand. SimpleFIN stays on the Bank accounts page. */
+export function skipSimplefin(): Promise<SimplefinStatus> {
+  return pb.send<SimplefinStatus>("/api/simplefin/skip", { method: "POST" });
+}
+
+/** Whether onboarding still needs the SimpleFIN step: nothing connected and nobody skipped it. */
+export async function needsSimplefinStep(): Promise<boolean> {
+  try {
+    const s = await simplefinStatus();
+    return !s.connected && !s.skipped;
+  } catch {
+    return false; // offline or an older server: don't block the app
+  }
 }
 
 export interface SimplefinPull {

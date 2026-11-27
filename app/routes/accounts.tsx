@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import {
   connectSimplefin, createAsset, createDebt, disconnectSimplefin, errorMessage, listAssets, listDebts,
-  listSimplefinAccounts, listSimplefinConnections, pullSimplefin, simplefinMinute, toPbDate, updateSimplefinAccount,
+  listSimplefinAccounts, listSimplefinConnections, pullSimplefin, simplefinStatus, skipSimplefin, toPbDate, updateSimplefinAccount,
   type SimplefinPull,
 } from "~/backend/api";
 import type { Asset, Debt, SimplefinAccount, SimplefinConnection } from "~/backend/types";
@@ -86,6 +86,15 @@ export default function AccountsPage() {
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
 
+  async function skip() {
+    try {
+      await skipSimplefin();
+      navigate("/budget");
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
   const reload = useCallback(async () => {
     try {
       const [c, a, as, ds] = await Promise.all([listSimplefinConnections(), listSimplefinAccounts(), listAssets(), listDebts()]);
@@ -100,7 +109,7 @@ export default function AccountsPage() {
   }, []);
   useEffect(() => {
     reload();
-    simplefinMinute().then(setMinute).catch(() => setMinute(null));
+    simplefinStatus().then((s) => setMinute(s.minute)).catch(() => setMinute(null));
   }, [reload]);
 
   return (
@@ -114,17 +123,20 @@ export default function AccountsPage() {
           <div className="flex flex-wrap items-start gap-4">
             <span className="bob text-5xl" aria-hidden="true">👋</span>
             <div className="min-w-0 flex-1">
-              <h3 className="text-xl font-black">Welcome! Connect your banks first?</h3>
+              <h3 className="text-xl font-black">Welcome! Step 1: connect your banks</h3>
               <p className="mt-1 font-semibold opacity-80">
                 With SimpleFIN, balances and new transactions come in every morning on their own: checking and cards
-                into the budget, savings, loans and retirement onto Assets and Debts. You can also skip this and type
-                everything in by hand, and connect later from the bank button at the top.
+                into the budget, savings, loans and retirement onto Assets and Debts. Connect it first, and importing
+                your history next (from the budget page) matches each spreadsheet account to its bank account.
+                You can also skip this and type everything in by hand, and connect later from the bank button at the top.
               </p>
             </div>
           </div>
-          <div className="mt-4 flex flex-wrap justify-end gap-3">
-            <Button color="white" onClick={() => navigate("/budget")}>Skip, I'll enter accounts by hand</Button>
-          </div>
+          {connections !== null && connections.length === 0 && (
+            <div className="mt-4 flex flex-wrap justify-end gap-3">
+              <Button color="white" onClick={skip}>Skip, I'll enter accounts by hand</Button>
+            </div>
+          )}
         </Card>
       )}
 
@@ -147,7 +159,7 @@ export default function AccountsPage() {
           ))}
           {welcome && (
             <div className="flex justify-end">
-              <Button color="mint" onClick={() => navigate("/budget")}>Done, show me the budget</Button>
+              <Button color="mint" onClick={() => navigate("/budget")}>Next: the budget and history import</Button>
             </div>
           )}
         </div>

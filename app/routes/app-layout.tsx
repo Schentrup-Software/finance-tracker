@@ -1,11 +1,16 @@
 import { useEffect } from "react";
 import { NavLink, Outlet, redirect, useNavigate } from "react-router";
-import { currentUserEmail, isSignedIn, refreshAuth, signOut } from "~/backend/api";
+import { currentUserEmail, isSignedIn, needsSimplefinStep, refreshAuth, signOut } from "~/backend/api";
 import { RoundButton, cx } from "~/components/ui";
 import { PiggyLogo } from "~/components/PiggyLogo";
 
-export async function clientLoader() {
+export async function clientLoader({ request }: { request: Request }) {
   if (!isSignedIn()) throw redirect("/login");
+  // Onboarding starts with SimpleFIN: until the household connects it or skips it, every
+  // household (new or not) lands on the Bank accounts page first.
+  if (new URL(request.url).pathname !== "/accounts" && (await needsSimplefinStep())) {
+    throw redirect("/accounts?welcome=1");
+  }
   return null;
 }
 

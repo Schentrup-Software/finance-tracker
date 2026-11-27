@@ -353,14 +353,18 @@ then saves it with calls you can also use from n8n:
 
 ## SimpleFIN Bridge (bank balances and transactions)
 
-The **Bank accounts** page (the bank button at the top, and the first screen after sign-up)
-connects [SimpleFIN Bridge](https://beta-bridge.simplefin.org/). Each account SimpleFIN reports
+The **Bank accounts** page (the bank button at the top) is also the first onboarding step: until a
+household has connected SimpleFIN or someone chose **Skip** (`users.simplefin_skipped` on the head
+of the household), the app opens it before anything else, so a history import can match its
+accounts to SimpleFIN's. It connects
+[SimpleFIN Bridge](https://beta-bridge.simplefin.org/). Each account SimpleFIN reports
 can bring its transactions into the budget, keep just its balance current, or be left out.
 n8n doesn't need to do anything for this; these endpoints are what the app uses.
 
 | Method | Path | Body | |
 | --- | --- | --- | --- |
-| `GET` | `/api/simplefin` | | `{ "minute" }`: the minute past the hour this server checks for pulls that are due |
+| `GET` | `/api/simplefin` | | `{ "minute", "connected", "skipped" }`: the minute past the hour this server checks for pulls that are due, whether the household has a connection, and when someone chose to skip SimpleFIN (`""` if nobody has) |
+| `POST` | `/api/simplefin/skip` | | The household will enter accounts by hand: onboarding stops asking. Same answer as `GET` |
 | `POST` | `/api/simplefin/connect` | `{ "setup_token", "sync_hour_utc" }` | Claims the setup token (each works once), saves the connection and pulls its account list. `→ { "id", "pulled", "error" }`; `error` is set if that first pull failed |
 | `POST` | `/api/simplefin/{id}/sync` | | Pulls now. `→ { "accounts", "transactions", "payments", "warnings" }` |
 | `DELETE` | `/api/simplefin/{id}` | | Forgets the connection and its account list. Transactions, payments, assets and debts it made stay |
@@ -466,6 +470,7 @@ and `updated`.
 | --- | --- | --- |
 | `email`, `name` | text | Members of a household can see each other |
 | `household` | relation → users | The head of the user's household; the head points at themself. Read-only through the API |
+| `simplefin_skipped` | date | On the head: when someone chose to skip connecting SimpleFIN during onboarding. Set by `POST /api/simplefin/skip`; read-only through the API |
 
 Household members are managed by the head:
 

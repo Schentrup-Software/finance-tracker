@@ -1729,6 +1729,26 @@ function disconnectSimplefin(app, ownerId, id) {
   app.delete(findConnection(app, ownerId, id));
 }
 
+/**
+ * Where the household is with SimpleFIN, for onboarding: it comes first until the household
+ * has connected it or someone chose to skip it.
+ */
+function simplefinStatus(app, ownerId) {
+  let skipped = "";
+  try { skipped = app.findRecordById("users", ownerId).getString("simplefin_skipped"); } catch (_) {}
+  return {
+    minute: simplefinMinute(app),
+    connected: app.countRecords("simplefin_connections", $dbx.hashExp({ owner: ownerId })) > 0,
+    skipped: skipped,
+  };
+}
+
+/** Notes that the household chose to enter accounts by hand (on the head's record, without hooks). */
+function skipSimplefin(app, ownerId) {
+  app.db().newQuery("UPDATE users SET simplefin_skipped = {:t} WHERE id = {:id}").bind({ t: pbNow(), id: ownerId }).execute();
+  return simplefinStatus(app, ownerId);
+}
+
 /** Runs every hour at the instance's minute: pulls each connection whose morning it is. */
 function runDueSimplefin(app) {
   const s = sfin();
@@ -1747,7 +1767,7 @@ function runDueSimplefin(app) {
 }
 
 module.exports = {
-  simplefinMinute, connectSimplefin, syncSimplefinNow, disconnectSimplefin, runDueSimplefin,
+  simplefinMinute, simplefinStatus, skipSimplefin, connectSimplefin, syncSimplefinNow, disconnectSimplefin, runDueSimplefin,
   applyVendor, backfillVendor, unmatchedStatements, mergeVendors,
   householdOf, requireHead, findMember,
   bearerOf, isApiToken, authWithApiToken, requireSession, listApiTokens, createApiToken, revokeApiToken,
