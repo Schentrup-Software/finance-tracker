@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { defaultUse, guessKind, morningHourUtc, suggestMatch } from "~/lib/simplefin";
+import { adoptSimplefin, defaultUse, guessKind, morningHourUtc, suggestMatch } from "~/lib/simplefin";
 
 // The server's half (pb_hooks/finance/simplefin.js) is plain CommonJS for PocketBase.
 const source = readFileSync(new URL("../../pb_hooks/finance/simplefin.js", import.meta.url), "utf8");
@@ -233,5 +233,36 @@ describe("choosing accounts in the app", () => {
   it("works out the UTC hour of 6 AM local", () => {
     const hour = morningHourUtc(6, new Date(2026, 10, 27));
     expect(hour).toBe(new Date(2026, 10, 27, 6).getUTCHours());
+  });
+});
+
+describe("matching an imported account to SimpleFIN", () => {
+  const assets = [{ id: "a1", type: "checking", name: "Cashback Debit (5766)" }, { id: "a2", type: "brokerage", name: "Brokerage" }];
+  const debts = [{ id: "d1", name: "Royal ONE Visa Signature" }];
+  const bank = (o: Partial<{ name: string; org: string; balance: number; asset: string; debt: string }>) =>
+    ({ name: "Account", org: "", balance: 0, asset: "", debt: "", ...o });
+
+  it("goes on the card the bank account already fills, as a card, whatever the file guessed", () => {
+    expect(adoptSimplefin(bank({ name: "Royal ONE Visa", balance: -12, debt: "d1" }), assets, debts))
+      .toEqual({ kind: "credit_card", asset: null, debt: debts[0] });
+  });
+
+  it("goes on the asset the bank account already fills, so no second checking account is made", () => {
+    expect(adoptSimplefin(bank({ name: "Cashback Debit", balance: 20720.88, asset: "a1" }), assets, debts))
+      .toEqual({ kind: "checking", asset: assets[0], debt: null });
+    expect(adoptSimplefin(bank({ asset: "a2" }), assets, debts).kind).toBe("checking");
+  });
+
+  it("takes the kind the bank account looks like when it fills nothing yet", () => {
+    expect(adoptSimplefin(bank({ name: "Sapphire Preferred", balance: -733.73 }), assets, debts))
+      .toEqual({ kind: "credit_card", asset: null, debt: null });
+    expect(adoptSimplefin(bank({ name: "Online Savings", balance: 10 }), assets, debts).kind).toBe("savings");
+    // A kind the import doesn't know (a mortgage) keeps the file's guess.
+    expect(adoptSimplefin(bank({ name: "Home Mortgage", balance: -200000 }), assets, debts).kind).toBeNull();
+  });
+
+  it("ignores a link to something that is gone", () => {
+    expect(adoptSimplefin(bank({ name: "Visa", balance: -5, debt: "gone" }), assets, debts))
+      .toEqual({ kind: "credit_card", asset: null, debt: null });
   });
 });
