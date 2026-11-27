@@ -85,8 +85,8 @@ export default function BudgetPage() {
   const [adding, setAdding] = useState<TransactionKind | null>(null);
   const [editIncome, setEditIncome] = useState(false);
   const [importing, setImporting] = useState(false);
-  // Bumped after an import, so the onboarding step re-checks whether setup is done.
-  const [setupVersion, setSetupVersion] = useState(0);
+  // Bumped when a budget is started by hand, so onboarding can finish SimpleFIN's setup.
+  const [budgetStarted, setBudgetStarted] = useState(0);
   const [details, setDetails] = useState<Transaction | null>(null);
 
   const sorted = useMemo(() => {
@@ -98,23 +98,34 @@ export default function BudgetPage() {
   const annual = sorted.filter((s) => isAnnual(s.envelope));
 
   const [reordering, setReordering] = useState(false);
-  // Saves a group's new order: the whole list is renumbered 0, 1, 2… (monthly first),
-  // and only envelopes whose number changed are written.
-  async function saveOrder(group: "monthly" | "annual", ids: string[]) {
+  // Saves a group's new order: the whole list is renumbered 0, 1, 2… (monthly first), and only
+  // envelopes whose number changed are written. Two quick moves must not lose a write, so the
+  // numbers already sent are remembered here (a render may not have caught up yet), and saves
+  // run one after another so an earlier one can't land last.
+  const orderSaves = useRef<Promise<void>>(Promise.resolve());
+  const sentSort = useRef(new Map<string, number>());
+  const latest = useRef({ data, sorted, monthly, annual });
+  latest.current = { data, sorted, monthly, annual };
+  function saveOrder(group: "monthly" | "annual", ids: string[]) {
+    const { data, sorted, monthly, annual } = latest.current;
     if (!data) return;
     const byId = new Map(sorted.map((s) => [s.envelope.id, s.envelope]));
     const groupIds = (group === "monthly" ? [ids, annual.map((s) => s.envelope.id)] : [monthly.map((s) => s.envelope.id), ids]).flat();
-    const updates = sortUpdates(groupIds.map((id) => byId.get(id)!));
+    const updates = sortUpdates(groupIds.map((id) => ({ id, sort: sentSort.current.get(id) ?? byId.get(id)!.sort })));
     if (!updates.length) return;
+    for (const u of updates) sentSort.current.set(u.id, u.sort);
     const newSort = new Map(updates.map((u) => [u.id, u.sort]));
-    setData({ ...data, envelopes: data.envelopes.map((e) => (newSort.has(e.id) ? { ...e, sort: newSort.get(e.id)! } : e)) });
-    try {
-      await Promise.all(updates.map((u) => updateEnvelope(u.id, { sort: u.sort })));
-      setError(null);
-    } catch (err) {
-      setError(errorMessage(err));
-      reload();
-    }
+    setData((d) => d && { ...d, envelopes: d.envelopes.map((e) => (newSort.has(e.id) ? { ...e, sort: newSort.get(e.id)! } : e)) });
+    orderSaves.current = orderSaves.current.then(async () => {
+      try {
+        await Promise.all(updates.map((u) => updateEnvelope(u.id, { sort: u.sort })));
+        setError(null);
+      } catch (err) {
+        setError(errorMessage(err));
+        sentSort.current.clear();
+        reload();
+      }
+    });
   }
   const selected = summary?.envelopes.find((e) => e.envelope.id === openEnvelope) ?? null;
 
@@ -151,13 +162,13 @@ export default function BudgetPage() {
         <TaxesView key={month.slice(0, 4)} initialYear={Number(month.slice(0, 4))} />
       ) : (
       <>
-      <FinishSetup version={setupVersion} onImport={() => setImporting(true)} onFinished={reload} />
+      <FinishSetup trigger={budgetStarted} onFinished={reload} />
       <div className="mt-6"><ErrorNote message={error} /></div>
 
       {!data ? (
         <div className="py-20 text-center text-5xl"><span className="bob inline-block">✉️</span></div>
       ) : !data.budget ? (
-        <StartMonth month={month} hasEnvelopes={data.envelopes.some((e) => !e.archived)} onStarted={reload}
+        <StartMonth month={month} hasEnvelopes={data.envelopes.some((e) => !e.archived)} onStarted={() => { reload(); setBudgetStarted((n) => n + 1); }}
           onImport={() => setImporting(true)} />
       ) : summary && view === "income" ? (
         <>
@@ -239,7 +250,7 @@ export default function BudgetPage() {
       )}
 
       <ImportHistory open={importing} onClose={() => setImporting(false)}
-        onDone={() => { reload(); setSetupVersion((v) => v + 1); }} />
+        onDone={reload} />
 
       {data?.budget && (
         <IncomeForm open={editIncome} budgetId={data.budget.id} value={data.budget.planned_income}

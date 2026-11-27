@@ -124,7 +124,7 @@ export default function AccountsPage() {
           <div className="flex flex-wrap items-start gap-4">
             <span className="bob text-5xl" aria-hidden="true">👋</span>
             <div className="min-w-0 flex-1">
-              <h3 className="text-xl font-black">Welcome! Step 1: connect your banks</h3>
+              <h3 className="text-xl font-black">Welcome! Connect your banks</h3>
               <p className="mt-1 font-semibold opacity-80">
                 With SimpleFIN, balances and new transactions come in every morning on their own: checking and cards
                 into the budget, savings, loans and retirement onto Assets and Debts. Connect it first, and importing
@@ -288,7 +288,7 @@ function ConnectionCard({ connection, accounts, assets, debts, minute, onChange 
       }
       if (connection.hold) {
         // Onboarding: transactions wait for the end of setup, so the history import and SimpleFIN don't overlap.
-        setResult("Saved. Transactions start coming in when you finish setup, after importing your history (or skipping that).");
+        setResult("Saved. Transactions start coming in once you start your budget or import your history.");
       } else {
         setBusy("Pulling…");
         setResult(describe(await pullSimplefin(connection.id)));
@@ -337,7 +337,7 @@ function ConnectionCard({ connection, accounts, assets, debts, minute, onChange 
           {connection.hold && (
             <div className="mt-1 text-sm font-bold">
               <span className="pill c-butter mr-2">Balances only for now</span>
-              Transactions start when you finish setup on the budget page.
+              Transactions start once you start your budget or import your history.
             </div>
           )}
         </div>
