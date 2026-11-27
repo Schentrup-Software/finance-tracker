@@ -234,6 +234,9 @@ export interface Paystub extends BaseRecord {
   net: number;
   /** What lands in the bank: net pay plus reimbursements (the stub's check amount). 0 = same as net. */
   deposit: number;
+  /** Year-to-date gross and net pay printed on the stub (0 = not printed). */
+  ytd_gross: number;
+  ytd_net: number;
   file: string;
   source: "upload" | "manual" | "repeat" | "";
   transaction: string;

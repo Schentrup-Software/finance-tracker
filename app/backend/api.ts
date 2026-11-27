@@ -486,6 +486,60 @@ export async function savePaystub(
   return paystub;
 }
 
+/** One paystub from a zip, as read in the browser. `file` is its position in the files sent. */
+export interface BulkStub {
+  name: string;
+  /** Whose paystub it is; the request's `earner` when left out. */
+  earner?: string;
+  file: number;
+  pay_date: string; // YYYY-MM-DD
+  period_start: string;
+  period_end: string;
+  gross: number;
+  net: number;
+  deposit: number;
+  lines: LineDraft[];
+  ytd_gross: number;
+  ytd_net: number;
+}
+
+export interface YtdCheck {
+  /** False when there was nothing to compare with (no earlier paystubs this year in the app). */
+  checked: boolean;
+  printed: number;
+  expected?: number;
+  off?: number;
+  ok?: boolean;
+}
+
+export interface BulkResult {
+  index: number;
+  name: string;
+  earner: string;
+  pay_date: string;
+  /** added: a new paystub; attached: its PDF was saved with the paystub already there; already: that paystub had its PDF. */
+  action: "added" | "attached" | "already";
+  /** For attached and already: how that paystub got there ("repeat" = copied from an earlier paystub). */
+  source?: Paystub["source"];
+  /** Earlier or later paychecks filled in from this paystub. */
+  filled: number;
+  ytd: { gross?: YtdCheck; net?: YtdCheck };
+}
+
+/**
+ * Saves paystubs read from a zip of PDFs, all or none: if any fails, or a stub's
+ * year-to-date pay doesn't add up with the paystubs in the app, nothing is kept.
+ */
+export async function bulkUploadPaystubs(earner: string, stubs: BulkStub[], files: Blob[], names: string[]): Promise<BulkResult[]> {
+  const form = new FormData();
+  form.append("earner", earner);
+  form.append("stubs", JSON.stringify(stubs.map((s) => ({
+    ...s, lines: s.lines.map((l) => ({ category: l.category, label: l.label, amount: l.amount, debt: l.debt, asset: l.asset, employer_paid: !!l.employer_paid })),
+  }))));
+  files.forEach((f, i) => form.append("files", new File([f], names[i].split("/").pop() || "paystub.pdf", { type: "application/pdf" })));
+  return (await pb.send<{ results: BulkResult[] }>("/api/paystubs/bulk", { method: "POST", body: form, requestKey: null })).results;
+}
+
 /** Copies a paystub to earlier matching deposits that are waiting for one. Returns how many it filled in. */
 export async function backfillPaystub(id: string): Promise<number> {
   return (await pb.send<{ filled: number }>(`/api/paystubs/${id}/backfill`, { method: "POST" })).filled;

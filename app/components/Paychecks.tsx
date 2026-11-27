@@ -15,10 +15,11 @@ import {
 import { monthLabel, shortDate, todayISO } from "~/lib/dates";
 import { money, parseMoney, round2 } from "~/lib/money";
 import {
-  CATEGORY_GROUPS, CATEGORY_LABELS, CONTRIBUTION_ASSET_TYPES, EMPLOYER_CATEGORIES, depositAmount, fromAgent, groupOf,
-  isContributionCategory, isLoanCategory, readPaystub, readingLooksGood, totalsByCategory, totalsByGroup,
-  unexplained, type PaystubReading,
+  CATEGORY_GROUPS, CATEGORY_LABELS, EMPLOYER_CATEGORIES, depositAmount, fromAgent, isContributionCategory, isLoanCategory,
+  linkAccounts, readPaystub, readingLines, readingLooksGood, totalsByCategory, totalsByGroup, unexplained,
+  type PaystubReading, type YearToDate,
 } from "~/lib/paystub";
+import { BulkPaystubModal } from "~/components/BulkPaystubs";
 
 const FREQ_LABELS: Record<PayFrequency, string> = {
   weekly: "Every week", biweekly: "Every two weeks", semimonthly: "Twice a month", monthly: "Monthly",
@@ -37,6 +38,7 @@ export function Paychecks({ month, onAddIncome }: { month: string; onAddIncome?:
   const [error, setError] = useState<string | null>(null);
   const [editingEarner, setEditingEarner] = useState<Earner | "new" | null>(null);
   const [stub, setStub] = useState<{ paystub?: Paystub; earner?: string; tx?: Transaction } | null>(null);
+  const [bulk, setBulk] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -77,6 +79,11 @@ export function Paychecks({ month, onAddIncome }: { month: string; onAddIncome?:
               <Icon name="plus" className="h-5 w-5" /> Paystub
             </Button>
           )}
+          {activeEarners.length > 0 && (
+            <Button small color="white" onClick={() => setBulk(true)}>
+              <Icon name="plus" className="h-5 w-5" /> Many paystubs
+            </Button>
+          )}
           <Button small color="white" onClick={() => setEditingEarner("new")}><Icon name="plus" className="h-5 w-5" /> Earner</Button>
         </div>
       }>Paychecks</SectionTitle>
@@ -98,6 +105,11 @@ export function Paychecks({ month, onAddIncome }: { month: string; onAddIncome?:
 
       <EarnerForm open={editingEarner !== null} earner={editingEarner === "new" ? null : editingEarner}
         onClose={() => setEditingEarner(null)} onSaved={reload} />
+
+      {bulk && (
+        <BulkPaystubModal earners={activeEarners} debts={debts} assets={assets}
+          onClose={() => setBulk(false)} onSaved={reload} />
+      )}
 
       {stub && (
         <PaystubModal earners={activeEarners} debts={debts} assets={assets} initial={stub}
@@ -399,6 +411,7 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [agent, setAgent] = useState(false);
+  const [ytd, setYtd] = useState<YearToDate | null>(null);
 
   useEffect(() => { agentReaderAvailable().then(setAgent); }, []);
   useEffect(() => {
@@ -407,40 +420,7 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
 
   const loanDebts = debts.filter((d) => d.type === "401k_loan" || d.balance > 0);
 
-  /**
-   * Links loan lines to their debt and contribution lines to their account: the
-   * same one as on the last paystub, else the only one of the right kind.
-   */
-  function withDebts(ls: LineDraft[], previous: LineDraft[]): LineDraft[] {
-    const k401 = debts.filter((d) => d.type === "401k_loan" && d.balance > 0);
-    const samePrev = (l: LineDraft, key: "debt" | "asset") => {
-      const same = previous.filter((p) => p[key] && p.category === l.category && !!p.employer_paid === !!l.employer_paid);
-      return same.find((p) => p.label === l.label) ?? same[0];
-    };
-    const linked = ls.map((l) => {
-      if (isLoanCategory(l.category) && !l.debt && !l.employer_paid) {
-        return { ...l, debt: samePrev(l, "debt")?.debt ?? (l.category === "401k_loan" && k401.length === 1 ? k401[0].id : "") };
-      }
-      if (isContributionCategory(l.category) && !l.asset) {
-        const types = CONTRIBUTION_ASSET_TYPES[l.category] ?? [];
-        const fits = assets.filter((a) => types.includes(a.type));
-        const prev = samePrev(l, "asset")?.asset;
-        return { ...l, asset: prev ?? (fits.length === 1 && !l.employer_paid ? fits[0].id : "") };
-      }
-      return l;
-    });
-    // An employer 401(k) or HSA contribution usually lands in the same account as
-    // the employee's own (a traditional match can go into the account that holds
-    // Roth contributions), so it follows the employee line's account.
-    return linked.map((l) => {
-      if (!l.employer_paid || l.asset || !isContributionCategory(l.category)) return l;
-      const group = groupOf(l.category).key;
-      const own = linked.find((o) => !o.employer_paid && o.asset && groupOf(o.category).key === group);
-      const types = CONTRIBUTION_ASSET_TYPES[l.category] ?? [];
-      const fits = assets.filter((a) => types.includes(a.type));
-      return { ...l, asset: own?.asset ?? (fits.length === 1 ? fits[0].id : "") };
-    });
-  }
+  const withDebts = (ls: LineDraft[], previous: LineDraft[]) => linkAccounts(ls, previous, debts, assets);
 
   async function previousLines(): Promise<LineDraft[]> {
     const last = earner ? await latestPaystub(earner) : null;
@@ -455,11 +435,8 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
     if (r.period_end) setPeriodEnd(r.period_end);
     if (r.gross !== null) setGross(String(r.gross));
     if (r.net !== null) setNet(String(r.net));
-    setLines(withDebts([
-      ...r.lines.map((l) => ({ ...l, debt: "", asset: "" })),
-      ...r.employer.map((l) => ({ ...l, debt: "", asset: "", employer_paid: true })),
-      ...r.reimbursements.map((l) => ({ ...l, debt: "", asset: "" })),
-    ], previous));
+    setYtd(r.ytd);
+    setLines(withDebts(readingLines(r), previous));
   }
 
   async function readWithAgent(f: File): Promise<PaystubReading> {
@@ -523,6 +500,7 @@ function PaystubModal({ earners, debts, assets, initial, onClose, onSaved }: {
       await savePaystub(existing, {
         earner, pay_date: toPbDate(payDate), period_start: toPbDate(periodStart), period_end: toPbDate(periodEnd),
         gross: parseMoney(gross), net: parseMoney(net), deposit,
+        ...(ytd ? { ytd_gross: ytd.gross ?? 0, ytd_net: ytd.net ?? 0 } : {}),
         source: existing?.source && existing.source !== "repeat" ? existing.source : file ? "upload" : "manual",
         ...(initial.tx ? { transaction: initial.tx.id } : {}),
       }, lines.filter((l) => l.amount > 0), file);

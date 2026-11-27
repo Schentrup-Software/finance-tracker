@@ -337,6 +337,8 @@ function attachPaystub(app, paystub) {
     const to = new Date(d.getTime() + 7 * 864e5).toISOString().replace("T", " ");
     // This earner's deposits (waiting, or filled with a copy of another paystub),
     // or income with no earner and no envelope (imported), nearest the pay date first.
+    // A copy that has its own paystub's PDF (saved by a bulk upload) is that
+    // paycheck's paystub, so its deposit isn't up for grabs.
     const candidates = app.findRecordsByFilter(
       "transactions",
       "owner = {:owner} && kind = 'income' && date >= {:from} && date <= {:to} && " +
@@ -347,7 +349,7 @@ function attachPaystub(app, paystub) {
       { owner: paystub.get("owner"), earner: paystub.get("earner"), from: from, to: to },
     ).filter((t) =>
       sameMoney(t.getFloat("amount"), depositOf(paystub)) &&
-      paystubsForTransaction(app, t.id).every((p) => p.get("source") === "repeat"),
+      paystubsForTransaction(app, t.id).every((p) => p.get("source") === "repeat" && !p.getString("file")),
     );
     const at = d.getTime();
     const dist = (t) => Math.abs(new Date(t.getString("date").replace(" ", "T")).getTime() - at);
@@ -506,6 +508,279 @@ function syncLinePayment(app, line) {
   app.save(payment);
 }
 
+// ---------- Bulk paystub upload (a zip of PDFs, read in the browser) ----------
+
+const LINE_CATEGORIES = [
+  "federal_tax", "state_tax", "local_tax", "social_security", "medicare", "medical", "dental", "vision", "hsa", "fsa",
+  "life", "disability", "401k", "roth_401k", "retirement_other", "401k_loan", "loan_other", "other_pre_tax",
+  "other_post_tax", "reimbursement",
+];
+
+/** Days in one pay period, for deciding whether the app has an earner's paystubs from the start of a year. */
+const PERIOD_DAYS = { weekly: 7, biweekly: 14, semimonthly: 16, monthly: 31 };
+
+function money2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+function dayOf(value) {
+  return String(value || "").slice(0, 10);
+}
+
+function pbDay(day) {
+  return day + " 12:00:00.000Z";
+}
+
+/** "Nov 13, 2026" */
+function niceDay(day) {
+  const m = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const [y, mo, d] = dayOf(day).split("-");
+  return m[Number(mo) - 1] + " " + Number(d) + ", " + y;
+}
+
+function dollars(n) {
+  return "$" + money2(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/** Checks one stub sent by the app and returns it cleaned up. */
+function cleanStub(app, ownerId, raw, index, fileCount) {
+  const name = String((raw && raw.name) || "paystub " + (index + 1)).slice(0, 200);
+  const fail = (why) => badRequest("The paystub " + name + ": " + why);
+  if (!raw || typeof raw !== "object") throw fail("not a paystub.");
+  const payDate = dayOf(raw.pay_date);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(payDate)) throw fail("no pay date.");
+  const file = Number(raw.file);
+  if (!(file >= 0 && file < fileCount)) throw fail("its PDF wasn't sent.");
+  const net = money2(raw.net);
+  const gross = money2(raw.gross);
+  if (net <= 0 || gross <= 0) throw fail("no gross or net pay.");
+  const lines = (Array.isArray(raw.lines) ? raw.lines : []).map((l) => {
+    const category = String((l && l.category) || "");
+    if (LINE_CATEGORIES.indexOf(category) === -1) throw fail("unknown category '" + category + "'.");
+    const line = {
+      category: category,
+      label: String(l.label || "").slice(0, 200),
+      amount: money2(l.amount),
+      employer_paid: !!l.employer_paid,
+      debt: l.employer_paid ? "" : String(l.debt || ""),
+      asset: String(l.asset || ""),
+    };
+    if (line.debt) assertOwned(app, "debts", line.debt, ownerId);
+    if (line.asset) assertOwned(app, "assets", line.asset, ownerId);
+    return line;
+  }).filter((l) => l.amount > 0);
+  const reimbursed = lines.filter((l) => l.category === "reimbursement").reduce((s, l) => s + l.amount, 0);
+  return {
+    index: index,
+    name: name,
+    file: file,
+    pay_date: payDate,
+    period_start: dayOf(raw.period_start),
+    period_end: dayOf(raw.period_end),
+    gross: gross,
+    net: net,
+    deposit: money2(raw.deposit) || money2(net + reimbursed),
+    lines: lines,
+    ytd_gross: money2(raw.ytd_gross),
+    ytd_net: money2(raw.ytd_net),
+  };
+}
+
+/**
+ * The earner's paystub already in the app for this paycheck: paid within a few
+ * days of the stub's pay date. `same` is whether it has the same check amount to
+ * the cent; a copied paystub that doesn't means the copy was wrong.
+ */
+function existingPaystubFor(app, ownerId, earnerId, stub) {
+  const d = new Date(stub.pay_date + "T12:00:00Z").getTime();
+  const from = new Date(d - 4 * 864e5).toISOString().replace("T", " ");
+  const to = new Date(d + 4 * 864e5).toISOString().replace("T", " ");
+  const rows = app.findRecordsByFilter(
+    "paystubs",
+    "owner = {:owner} && earner = {:earner} && pay_date >= {:from} && pay_date <= {:to}",
+    "pay_date,created",
+    0,
+    0,
+    { owner: ownerId, earner: earnerId, from: from, to: to },
+  );
+  const dist = (p) => Math.abs(daysBetween(p.getString("pay_date"), stub.pay_date));
+  const same = rows.filter((p) => sameMoney(depositOf(p), stub.deposit)).sort((a, b) => dist(a) - dist(b));
+  if (same.length) return { paystub: same[0], same: true };
+  const copy = rows.filter((p) => p.get("source") === "repeat").sort((a, b) => dist(a) - dist(b))[0];
+  return copy ? { paystub: copy, same: false } : null;
+}
+
+/**
+ * Compares a stub's printed year-to-date gross or net pay (`field`) with the
+ * paystubs in the app. It counts from the last earlier paystub this year that
+ * had the figure printed (its figure plus every paycheck since), else from
+ * January 1st when the app has this earner's paystubs from the first pay period
+ * on. Each copied paystub in between may be a cent off (rounding), so the
+ * tolerance grows a cent with each one. Returns null when there's nothing to
+ * compare with.
+ */
+function ytdCheck(app, ownerId, earner, record, field, printed) {
+  if (!printed) return null;
+  const payDate = record.getString("pay_date");
+  const year = dayOf(payDate).slice(0, 4);
+  const yearStart = year + "-01-01 00:00:00.000Z";
+  const ytdField = "ytd_" + field;
+  const params = { owner: ownerId, earner: earner.id, start: yearStart, end: payDate, self: record.id };
+  const anchors = app.findRecordsByFilter(
+    "paystubs",
+    "owner = {:owner} && earner = {:earner} && id != {:self} && pay_date >= {:start} && pay_date < {:end} && " + ytdField + " > 0",
+    "-pay_date,-created",
+    1,
+    0,
+    params,
+  );
+  const anchor = anchors[0] || null;
+  const since = app.findRecordsByFilter(
+    "paystubs",
+    "owner = {:owner} && earner = {:earner} && pay_date >= {:start} && pay_date <= {:end}" + (anchor ? " && pay_date > {:after}" : ""),
+    "pay_date",
+    0,
+    0,
+    Object.assign({ after: anchor ? anchor.getString("pay_date") : "" }, params),
+  );
+  if (!anchor) {
+    // Without an earlier figure, the sum only means something if the app has this
+    // earner's paystubs from the start of the year.
+    const first = since[0];
+    const limit = new Date(Date.parse(year + "-01-01T12:00:00Z") + ((PERIOD_DAYS[earner.get("pay_frequency")] || 14) + 3) * 864e5);
+    if (!first || dayOf(first.getString("pay_date")) > limit.toISOString().slice(0, 10)) return { checked: false, printed: printed };
+  }
+  let total = anchor ? anchor.getFloat(ytdField) : 0;
+  let copies = 0;
+  for (const p of since) {
+    total += p.getFloat(field);
+    if (p.get("source") === "repeat") copies++;
+  }
+  const expected = money2(total);
+  const off = money2(printed - expected);
+  return {
+    checked: true,
+    printed: printed,
+    expected: expected,
+    off: off,
+    ok: Math.abs(off) <= 0.01 * (1 + copies) + 0.001,
+    from: anchor ? dayOf(anchor.getString("pay_date")) : "",
+    count: since.length,
+  };
+}
+
+/**
+ * Saves a batch of paystubs read from a zip of PDFs, all or nothing. In pay-date
+ * order, each stub:
+ *   - already in the app (a paystub for that paycheck with the same check amount,
+ *     copied or not): its PDF is saved with that paystub, nothing else changes;
+ *   - otherwise: saved like an uploaded paystub (it links to its deposit and
+ *     backfills matching earlier ones, and its loan and contribution lines move
+ *     their debts and assets).
+ * A stub that prints year-to-date gross or net pay is then checked against the
+ * paystubs in the app (see ytdCheck). If they've drifted apart, or anything else
+ * fails, the whole batch is rolled back: nothing it added or changed is kept.
+ */
+function bulkUploadPaystubs(app, ownerId, earnerId, rawStubs, files) {
+  if (!Array.isArray(rawStubs) || rawStubs.length === 0) throw badRequest("Send at least one paystub in `stubs`.");
+  if (rawStubs.length > 200) throw badRequest("Send at most 200 paystubs at a time.");
+  // Each stub can name its own earner (read from the name on it); `earnerId` is for the rest.
+  const earners = {};
+  const earnerOf = (id) => {
+    if (!earners[id]) {
+      let rec;
+      try { rec = app.findRecordById("earners", id); } catch (_) { rec = null; }
+      if (!rec || rec.get("owner") !== ownerId) throw badRequest("Pick whose paystubs these are.");
+      earners[id] = rec;
+    }
+    return earners[id];
+  };
+  const stubs = rawStubs.map((r, i) => {
+    const stub = cleanStub(app, ownerId, r, i, files.length);
+    stub.earner = earnerOf(String((r && r.earner) || earnerId || "")).id;
+    return stub;
+  });
+  const order = stubs.slice().sort((a, b) => (a.pay_date < b.pay_date ? -1 : a.pay_date > b.pay_date ? 1 : a.index - b.index));
+  const results = [];
+
+  app.runInTransaction((txApp) => {
+    const collection = txApp.findCollectionByNameOrId("paystubs");
+    const lineCollection = txApp.findCollectionByNameOrId("paystub_lines");
+    for (const stub of order) {
+      const result = { index: stub.index, name: stub.name, pay_date: stub.pay_date, action: "added", filled: 0, ytd: {} };
+      const earner = earners[stub.earner];
+      result.earner = earner.id;
+      const found = existingPaystubFor(txApp, ownerId, earner.id, stub);
+      let record;
+      if (found && !found.same) {
+        throw badRequest(
+          "The paystub " + stub.name + " doesn't match the paycheck on " + niceDay(found.paystub.getString("pay_date")) + ", which was filled in from an earlier paystub with " +
+          dollars(depositOf(found.paystub)) + ", but this paystub's check amount is " + dollars(stub.deposit) +
+          ". Open that paycheck and upload this paystub on its own to fix it. Nothing from this upload was saved.",
+        );
+      } else if (found) {
+        // Already in the app (often a paystub copied onto a matching deposit): keep its
+        // amounts and just save the PDF with it.
+        record = found.paystub;
+        result.action = record.getString("file") ? "already" : "attached";
+        result.source = record.get("source");
+        if (!record.getString("file")) record.set("file", files[stub.file]);
+        if (stub.ytd_gross && !record.getFloat("ytd_gross")) record.set("ytd_gross", stub.ytd_gross);
+        if (stub.ytd_net && !record.getFloat("ytd_net")) record.set("ytd_net", stub.ytd_net);
+        txApp.save(record);
+      } else {
+        record = new Record(collection);
+        record.set("owner", ownerId);
+        record.set("earner", earner.id);
+        record.set("pay_date", pbDay(stub.pay_date));
+        if (stub.period_start) record.set("period_start", pbDay(stub.period_start));
+        if (stub.period_end) record.set("period_end", pbDay(stub.period_end));
+        record.set("gross", stub.gross);
+        record.set("net", stub.net);
+        record.set("deposit", stub.deposit);
+        record.set("ytd_gross", stub.ytd_gross);
+        record.set("ytd_net", stub.ytd_net);
+        record.set("source", "upload");
+        record.set("file", files[stub.file]);
+        txApp.save(record);
+        stub.lines.forEach((l, i) => {
+          const line = new Record(lineCollection);
+          line.set("owner", ownerId);
+          line.set("paystub", record.id);
+          line.set("category", l.category);
+          line.set("label", l.label);
+          line.set("amount", l.amount);
+          line.set("debt", l.debt);
+          line.set("asset", l.asset);
+          line.set("employer_paid", l.employer_paid);
+          line.set("sort", i);
+          txApp.save(line);
+        });
+        result.filled = backfillPaystub(txApp, ownerId, record.id);
+        record = txApp.findRecordById("paystubs", record.id);
+      }
+      result.paystub = record.id;
+
+      for (const field of ["gross", "net"]) {
+        const check = ytdCheck(txApp, ownerId, earner, record, field, stub["ytd_" + field]);
+        if (!check) continue;
+        result.ytd[field] = check;
+        if (check.checked && !check.ok) {
+          throw badRequest(
+            "The paystub " + stub.name + " (paid " + niceDay(stub.pay_date) + ") shows " + dollars(check.printed) + " " + field +
+            " pay so far this year, but the paystubs in the app add up to " + dollars(check.expected) + " (" +
+            dollars(Math.abs(check.off)) + (check.off > 0 ? " short" : " over") + "). Nothing from this upload was saved.",
+          );
+        }
+      }
+      results.push(result);
+    }
+  });
+
+  results.sort((a, b) => a.index - b.index);
+  return { results: results };
+}
+
 // ---------- Paystub reading fallback: an OpenClaw agent ----------
 //
 // The app reads paystub PDFs in the browser first. When that can't make sense
@@ -526,8 +801,10 @@ const PAYSTUB_PROMPT = [
   '{"pay_date":"YYYY-MM-DD","period_start":"YYYY-MM-DD","period_end":"YYYY-MM-DD","employer_name":"","gross":0,"net":0,',
   '"lines":[{"label":"as printed","category":"one of the categories","amount":0}],',
   '"employer":[{"label":"as printed","category":"one of the categories","amount":0}],',
-  '"reimbursements":[{"label":"as printed","amount":0}],"check_amount":0}',
+  '"reimbursements":[{"label":"as printed","amount":0}],"check_amount":0,"ytd_gross":0,"ytd_net":0,"employee_name":""}',
   "Use this pay period's amounts, not year-to-date. Amounts are positive numbers in dollars.",
+  "employee_name is the employee's name as printed.",
+  "ytd_gross and ytd_net are the year-to-date gross and net pay printed on the stub (null if it doesn't show them).",
   "lines are every deduction and tax taken from gross pay. Do not include earnings lines or net pay in lines.",
   "employer is what the employer paid on top of gross pay (employer contributions such as employer-paid medical, dental or vision insurance, a 401(k)",
   "match or contribution, or an HSA contribution). Use [] if there are none. Employer contributions never go in lines,",
@@ -1478,4 +1755,5 @@ module.exports = {
   agentConfig, readPaystubWithAgent, adjustAssetValue, payDateOf,
   OWNED, SYNCABLE, upsert, adjustDebtBalance,
   setPaystubStatus, reconcilePaycheck, attachPaystub, detachPaystub, backfillPaystub, syncLinePayment, removeLinePayment,
+  bulkUploadPaystubs,
 };
