@@ -658,6 +658,35 @@ test("onboarding: SimpleFIN first, its transactions wait for the end of setup", 
     await page.goto("/accounts");
     await expect(page.getByText("Balances only for now")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Pull now" })).toBeVisible();
+
+    // A history import matched to the bank's accounts goes on what they already fill: no second card or checking.
+    await page.getByRole("link", { name: /Budget/ }).click();
+    await page.getByRole("button", { name: /Import history/ }).first().click();
+    const d = page.getByRole("dialog");
+    await d.getByLabel("History file").setInputFiles(HISTORY_CSV);
+    const kind = (name: string, option: string) => d.getByRole("radiogroup", { name: `${name} kind`, exact: true }).getByRole("radio", { name: option });
+    await expect(d.getByLabel("Visa SimpleFIN account").locator("option:checked")).toHaveText(/Sunshine Visa/);
+    await expect(d.getByText(/goes on Sunshine Visa/)).toBeVisible();
+    await expect(d.getByLabel("Checking SimpleFIN account").locator("option:checked")).toHaveText(/Everyday Checking/);
+    await expect(d.getByText(/goes on Everyday Checking/)).toBeVisible();
+    // Matching a card to an account the file took for checking makes it a card on that debt; unmatching undoes it.
+    await d.getByLabel("Visa SimpleFIN account").selectOption({ label: "Not in SimpleFIN (enter by hand)" });
+    await d.getByLabel("Checking SimpleFIN account").selectOption({ label: "SimpleFIN: Sunshine Visa (Sunshine Bank)" });
+    await expect(kind("Checking", "Credit card")).toHaveAttribute("aria-checked", "true");
+    await d.getByLabel("Checking SimpleFIN account").selectOption({ label: "Not in SimpleFIN (enter by hand)" });
+    await expect(kind("Checking", "Checking")).toHaveAttribute("aria-checked", "true");
+    await d.getByLabel("Checking SimpleFIN account").selectOption({ label: "SimpleFIN: Everyday Checking (Sunshine Bank)" });
+    await d.getByLabel("Visa SimpleFIN account").selectOption({ label: "SimpleFIN: Sunshine Visa (Sunshine Bank)" });
+    await expect(kind("Visa", "Credit card")).toHaveAttribute("aria-checked", "true");
+    await d.getByRole("button", { name: /^Import \d+ transactions/ }).click();
+    await expect(d.getByText(/Imported \d+ transactions/)).toBeVisible();
+    await d.getByRole("button", { name: "Done" }).click();
+    await page.getByRole("link", { name: /Assets/ }).click();
+    await expect(page.getByText("Everyday Checking")).toHaveCount(1);
+    await expect(page.getByText("Checking", { exact: true })).toHaveCount(0);
+    await page.getByRole("link", { name: /Debts/ }).click();
+    await expect(page.getByText("Sunshine Visa")).toHaveCount(1);
+    await expect(page.getByText("Visa", { exact: true })).toHaveCount(0);
   } finally {
     mock.kill();
   }

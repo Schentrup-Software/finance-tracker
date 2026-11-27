@@ -12,7 +12,7 @@ import {
 } from "~/lib/importer";
 import { shortDate } from "~/lib/dates";
 import { money, parseMoney } from "~/lib/money";
-import { defaultUse, suggestMatch } from "~/lib/simplefin";
+import { adoptSimplefin, defaultUse, suggestMatch } from "~/lib/simplefin";
 
 interface EnvelopeChoice {
   name: string;
@@ -29,9 +29,11 @@ interface EnvelopeChoice {
 interface AccountChoice {
   found: FoundAccount;
   kind: AccountKind | "skip";
-  /** What's already in the app under this name: a bank account (asset) or a card (debt). */
+  /** What it goes on in the app: the bank account (asset) or card (debt) by this name, or the one its SimpleFIN account fills. */
   asset: Asset | null;
   debt: Debt | null;
+  /** What's in the app under this name, and the file's guess: what it goes back to when unmatched from SimpleFIN. */
+  own: { kind: AccountKind; asset: Asset | null; debt: Debt | null };
   balance: string;
   /** The SimpleFIN account it is, if any: its balance fills in, and new transactions come from it after the import. */
   sfin: string;
@@ -65,6 +67,7 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
   const [choices, setChoices] = useState<EnvelopeChoice[]>([]);
   const [accounts, setAccounts] = useState<AccountChoice[]>([]);
   const [sfinAccounts, setSfinAccounts] = useState<SimplefinAccount[]>([]);
+  const [appAccounts, setAppAccounts] = useState<{ assets: Asset[]; debts: Debt[] }>({ assets: [], debts: [] });
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -92,6 +95,7 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
       ]);
       const sfin = sfinAll.filter((s) => s.use !== "ignore");
       setSfinAccounts(sfin);
+      setAppAccounts({ assets, debts });
       const taken = new Set<string>();
       const find = <T extends { name: string; external_id: string }>(list: T[], name: string) =>
         list.find((r) => r.external_id === accountExternalId(name)) ??
@@ -105,9 +109,15 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
           : a.type;
         // A SimpleFIN account already filling this asset or debt, or the one whose name fits best.
         const linked = sfin.find((s) => (asset && s.asset === asset.id) || (debt && s.debt === debt.id));
-        const match = linked ?? suggestMatch(a.name, kind, sfin.filter((s) => !s.asset && !s.debt && !taken.has(s.id)));
-        if (match) taken.add(match.id);
-        return { found: a, kind, asset, debt, balance: "", sfin: match?.id ?? "" };
+        const match = linked ?? suggestMatch(a.name, kind, sfin.filter((s) => !taken.has(s.id)));
+        const own = { kind, asset, debt };
+        if (!match) return { found: a, ...own, own, balance: "", sfin: "" };
+        taken.add(match.id);
+        // Matched: it goes on what that bank account already fills, so nothing is made twice.
+        const adopted = adoptSimplefin(match, assets, debts);
+        return adopted.asset || adopted.debt
+          ? { found: a, kind: adopted.kind ?? kind, asset: adopted.asset, debt: adopted.debt, own, balance: "", sfin: match.id }
+          : { found: a, ...own, own, balance: "", sfin: match.id };
       }));
       const byName = new Map(existing.map((e) => [e.name.trim().toLowerCase(), e]));
       const yearAgo = `${Number(p.lastDate.slice(0, 4)) - 1}${p.lastDate.slice(4)}`;
@@ -133,6 +143,18 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
     setChoices((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
   const changeAccount = (i: number, patch: Partial<AccountChoice>) =>
     setAccounts((as) => as.map((a, j) => (j === i ? { ...a, ...patch } : a)));
+  // Picking a SimpleFIN account: the import account goes on whatever that bank account already fills
+  // (a card's debt, a checking account's asset), and takes its kind. Unpicking goes back to its own.
+  function pickSfin(i: number, id: string) {
+    const s = sfinAccounts.find((x) => x.id === id);
+    setAccounts((as) => as.map((a, j) => {
+      if (j !== i) return a;
+      if (!s) return { ...a, sfin: "", kind: a.own.kind, asset: a.own.asset, debt: a.own.debt };
+      const adopted = adoptSimplefin(s, appAccounts.assets, appAccounts.debts);
+      if (adopted.asset || adopted.debt) return { ...a, sfin: id, kind: adopted.kind ?? a.kind, asset: adopted.asset, debt: adopted.debt };
+      return { ...a, sfin: id, kind: adopted.kind ?? a.own.kind, asset: a.own.asset, debt: a.own.debt };
+    }));
+  }
 
   async function runImport() {
     if (!plan) return;
@@ -348,7 +370,8 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
                         <span className="font-black">{a.found.name}</span>
                         <span className="ml-2 text-xs font-bold opacity-70">
                           {a.found.count} entries · {a.found.reason}
-                          {existing && " · already in the app"}
+                          {existing && (existing.name.trim().toLowerCase() === a.found.name.trim().toLowerCase()
+                            ? " · already in the app" : ` · goes on ${existing.name}`)}
                         </span>
                       </div>
                       <div className="mt-2 grid gap-2 sm:grid-cols-[auto_1fr]">
@@ -364,7 +387,7 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
                         </div>
                         {a.kind !== "skip" && sfinAccounts.length > 0 && (
                           <select className="input appearance-none py-2 text-sm sm:col-span-2" aria-label={`${a.found.name} SimpleFIN account`}
-                            value={a.sfin} onChange={(e) => changeAccount(i, { sfin: e.target.value })}>
+                            value={a.sfin} onChange={(e) => pickSfin(i, e.target.value)}>
                             <option value="">Not in SimpleFIN (enter by hand)</option>
                             {sfinAccounts.map((s) => (
                               <option key={s.id} value={s.id}

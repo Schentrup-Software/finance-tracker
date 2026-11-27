@@ -124,3 +124,25 @@ export function pullTimeLabel(hourUtc: number, minute: number, date = new Date()
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), hourUtc, minute));
   return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
+
+/** The kinds of account a history import knows. */
+export type ImportAccountKind = "checking" | "savings" | "cash" | "credit_card";
+const IMPORT_KINDS: string[] = ["checking", "savings", "cash", "credit_card"];
+
+/**
+ * What a history-import account becomes once it is matched to SimpleFIN account `s`. If `s` already
+ * fills an asset or debt (the bank step links every account it saves), the import uses that one
+ * instead of making a second copy, and a debt makes it a card. Otherwise its kind is what the bank
+ * account looks like, when that is one the import knows. `kind` null keeps the import's own guess.
+ */
+export function adoptSimplefin<A extends { id: string; type: string }, D extends { id: string }>(
+  s: { name: string; org: string; balance: number; asset: string; debt: string },
+  assets: A[], debts: D[],
+): { kind: ImportAccountKind | null; asset: A | null; debt: D | null } {
+  const debt = s.debt ? debts.find((d) => d.id === s.debt) ?? null : null;
+  if (debt) return { kind: "credit_card", asset: null, debt };
+  const asset = s.asset ? assets.find((a) => a.id === s.asset) ?? null : null;
+  if (asset) return { kind: IMPORT_KINDS.includes(asset.type) ? (asset.type as ImportAccountKind) : "checking", asset, debt: null };
+  const guess = guessKind(s.name, s.balance, s.org);
+  return { kind: IMPORT_KINDS.includes(guess) ? (guess as ImportAccountKind) : null, asset: null, debt: null };
+}
