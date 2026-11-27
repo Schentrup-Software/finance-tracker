@@ -1380,7 +1380,374 @@ function revokeApiToken(app, ownerId, id) {
   app.delete(t);
 }
 
+// ---------- SimpleFIN Bridge ----------
+//
+// The pure parts (token decoding, what a pull adds, when it's due) are in finance/simplefin.js.
+
+function sfin() {
+  return require(`${__hooks}/finance/simplefin.js`);
+}
+
+/** A "YYYY-MM-DD" day as PocketBase stores days (noon UTC, so it's the same day everywhere). */
+function pbDay(day) {
+  return day ? String(day).slice(0, 10) + " 12:00:00.000Z" : "";
+}
+
+function pbNow() {
+  return new Date().toISOString().replace("T", " ");
+}
+
+/**
+ * The minute past each hour this instance checks for due pulls. Picked at random the
+ * first time and kept in pb_data, so instances spread out over the hour (and away
+ * from the top of it). SIMPLEFIN_MINUTE overrides it.
+ */
+function simplefinMinute(app) {
+  const s = sfin();
+  const fromEnv = s.parseMinute($os.getenv("SIMPLEFIN_MINUTE"));
+  if (fromEnv !== null) return fromEnv;
+  const path = app.dataDir() + "/simplefin_minute";
+  try {
+    const saved = s.parseMinute(toString($os.readFile(path)));
+    if (saved !== null) return saved;
+  } catch (_) {}
+  const minute = s.pickMinute();
+  try {
+    $os.writeFile(path, String(minute), 0o644);
+  } catch (err) {
+    console.log("Couldn't save the SimpleFIN minute to " + path + ": " + err);
+  }
+  return minute;
+}
+
+function sfinFailure(message, details) {
+  return new BadRequestError(message, details ? JSON.stringify(details, null, 2) : undefined);
+}
+
+/** Trades a setup token for an access URL. Each token works once. */
+function claimSimplefin(setupToken) {
+  const s = sfin();
+  let claimUrl;
+  try {
+    claimUrl = s.claimUrlFromToken(setupToken);
+  } catch (err) {
+    throw new BadRequestError(String(err.message || err));
+  }
+  // A pasted access URL (it already has a login in it) needs no claiming.
+  if (s.splitAccessUrl(claimUrl).username) {
+    try { return s.checkAccessUrl(claimUrl); } catch (err) { throw new BadRequestError(String(err.message || err)); }
+  }
+  let res;
+  try {
+    res = $http.send({ url: claimUrl, method: "POST", headers: { "Content-Length": "0" }, body: "", timeout: 30 });
+  } catch (err) {
+    throw sfinFailure("Couldn't reach SimpleFIN to claim the setup token.", { url: safeUrl(claimUrl), cause: String(err) });
+  }
+  const text = (() => { try { return toString(res.body); } catch (_) { return ""; } })();
+  if (res.statusCode === 403) {
+    throw new BadRequestError(
+      "SimpleFIN says this setup token was already used or doesn't exist. Make a new one on the Bridge. " +
+      "If you didn't use it yourself, someone else may have: disconnect it on the Bridge.",
+    );
+  }
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    throw sfinFailure("SimpleFIN answered the claim with HTTP " + res.statusCode + ".", { url: safeUrl(claimUrl), body: truncate(text, 500) });
+  }
+  try {
+    return s.checkAccessUrl(text);
+  } catch (err) {
+    throw sfinFailure(String(err.message || err), { url: safeUrl(claimUrl) });
+  }
+}
+
+/** GET <access URL>/accounts. Returns the parsed answer, or throws with a message for the person. */
+function fetchSimplefin(accessUrl, query) {
+  const s = sfin();
+  const parts = s.splitAccessUrl(accessUrl);
+  const url = parts.base + "/accounts?" + query;
+  let res;
+  try {
+    res = $http.send({
+      url: url,
+      method: "GET",
+      headers: { Authorization: "Basic " + s.encodeBase64(parts.username + ":" + parts.password), Accept: "application/json" },
+      timeout: 90,
+    });
+  } catch (err) {
+    throw new Error("Couldn't reach SimpleFIN (" + safeUrl(parts.base) + "): " + err);
+  }
+  if (res.statusCode === 403 || res.statusCode === 401) {
+    throw new Error("SimpleFIN refused this connection. It may have been disconnected on the Bridge. Connect again with a new setup token.");
+  }
+  if (res.statusCode === 402) throw new Error("SimpleFIN says the Bridge subscription needs paying.");
+  if (res.statusCode < 200 || res.statusCode >= 300) throw new Error("SimpleFIN answered with HTTP " + res.statusCode + ".");
+  let body = res.json;
+  if (!body) {
+    try { body = JSON.parse(toString(res.body)); } catch (_) { body = null; }
+  }
+  if (!body || !Array.isArray(body.accounts)) throw new Error("SimpleFIN's answer had no accounts in it.");
+  return body;
+}
+
+function findSimplefinAccount(app, connId, sfinId) {
+  try {
+    return app.findFirstRecordByFilter("simplefin_accounts", "connection = {:c} && sfin_id = {:s}", { c: connId, s: sfinId });
+  } catch (_) {
+    return null;
+  }
+}
+
+function recordExists(app, collection, filter, params) {
+  try {
+    app.findFirstRecordByFilter(collection, filter, params);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Filter params for "within PAIR_DAYS days of this day, this amount to the cent". */
+function nearParams(owner, day, amount) {
+  const s = sfin();
+  const at = s.epochOfDay(day);
+  return {
+    o: owner,
+    lo: s.dayOf(at - s.PAIR_DAYS * 86400) + " 00:00:00.000Z",
+    hi: s.dayOf(at + s.PAIR_DAYS * 86400) + " 23:59:59.999Z",
+    a1: amount - 0.004,
+    a2: amount + 0.004,
+  };
+}
+
+/**
+ * Pulls one connection: refreshes its accounts and their balances, and brings in the
+ * transactions of accounts used for spending. Saves what went wrong on the connection
+ * and rethrows it. Returns { accounts, transactions, payments, warnings }.
+ */
+function pullSimplefin(app, conn) {
+  const s = sfin();
+  const owner = conn.get("owner");
+  const now = Date.now();
+  conn.set("last_attempt", pbNow());
+  try {
+    const inUse = app.findRecordsByFilter(
+      "simplefin_accounts", "connection = {:c} && (use = 'spending' || use = 'balance')", "", 0, 0, { c: conn.id },
+    );
+    const spending = inUse.filter((a) => a.getString("use") === "spending" && (a.get("asset") || a.get("debt")));
+    const nowSec = Math.floor(now / 1000);
+    let query = "version=2";
+    if (spending.length > 0) {
+      query += "&start-date=" + s.windowStart(nowSec, spending.map((a) => ({
+        last_pulled: a.getString("last_pulled"), sync_from: a.getString("sync_from"),
+      })));
+    } else {
+      query += "&balances-only=1";
+    }
+    const body = fetchSimplefin(conn.getString("access_url"), query);
+    const warnings = s.answerErrors(body);
+    const found = s.readAccounts(body);
+    const result = { accounts: found.length, transactions: 0, payments: 0, warnings: warnings };
+
+    app.runInTransaction((txApp) => {
+      const accountsCol = txApp.findCollectionByNameOrId("simplefin_accounts");
+      const records = {};
+      const orgs = [];
+      for (const a of found) {
+        let rec = findSimplefinAccount(txApp, conn.id, a.id);
+        if (!rec) {
+          rec = new Record(accountsCol);
+          rec.set("owner", owner);
+          rec.set("connection", conn.id);
+          rec.set("sfin_id", a.id);
+        }
+        rec.set("name", a.name);
+        rec.set("org", a.org);
+        rec.set("currency", a.currency);
+        rec.set("balance", a.balance);
+        rec.set("available_balance", a.available_balance === null ? a.balance : a.available_balance);
+        rec.set("balance_date", pbDay(a.balance_date));
+        txApp.save(rec);
+        records[a.id] = rec;
+        if (a.org && orgs.indexOf(a.org) === -1) orgs.push(a.org);
+      }
+      if (orgs.length) conn.set("label", orgs.join(", ").slice(0, 300));
+
+      // Transactions, for accounts used for spending.
+      const debtTypes = {};
+      const linked = found.filter((a) => records[a.id]).map((a) => {
+        const rec = records[a.id];
+        const debt = rec.get("asset") ? "" : rec.get("debt");
+        if (debt && !debtTypes[debt]) {
+          try { debtTypes[debt] = txApp.findRecordById("debts", debt).getString("type"); } catch (_) { debtTypes[debt] = ""; }
+        }
+        return {
+          id: a.id, name: rec.getString("name"), use: rec.getString("use"),
+          asset: rec.get("asset"), debt: debt, debt_type: debtTypes[debt] || "",
+          sync_from: rec.getString("sync_from").slice(0, 10), transactions: a.transactions,
+        };
+      });
+      const known = (ext) =>
+        recordExists(txApp, "transactions", "owner = {:o} && external_id = {:e}", { o: owner, e: ext }) ||
+        recordExists(txApp, "debt_payments", "owner = {:o} && (external_id = {:e} || from_external_id = {:e})", { o: owner, e: ext });
+      const plan = s.planPull(linked, known);
+
+      // A card payment whose withdrawal came in on an earlier day: that withdrawal isn't spending after all.
+      for (const p of plan.payments) {
+        if (p.from_external_id) continue;
+        let old = null;
+        try {
+          old = txApp.findFirstRecordByFilter("transactions",
+            "owner = {:o} && kind = 'expense' && account_asset != '' && envelope = '' && external_id ~ 'sfin-%' && " +
+            "amount >= {:a1} && amount <= {:a2} && date >= {:lo} && date <= {:hi}", nearParams(owner, p.date, p.amount));
+        } catch (_) {}
+        if (old) {
+          p.from_asset = old.get("account_asset");
+          p.from_external_id = old.getString("external_id");
+          txApp.delete(old);
+        }
+      }
+      // A withdrawal that paid a card payment brought in on an earlier day.
+      const keep = [];
+      for (const t of plan.transactions) {
+        if (t.kind === "expense" && t.account_asset) {
+          let pay = null;
+          try {
+            pay = txApp.findFirstRecordByFilter("debt_payments",
+              "owner = {:o} && from_external_id = '' && external_id ~ 'sfin-%' && " +
+              "amount >= {:a1} && amount <= {:a2} && date >= {:lo} && date <= {:hi}", nearParams(owner, t.date, t.amount));
+          } catch (_) {}
+          if (pay) {
+            pay.set("from_asset", t.account_asset);
+            pay.set("from_external_id", t.external_id);
+            txApp.save(pay);
+            continue;
+          }
+        }
+        keep.push(t);
+      }
+
+      const earners = txApp.findRecordsByFilter("earners", "owner = {:o} && archived = false && employer != ''", "", 0, 0, { o: owner });
+      const txCol = txApp.findCollectionByNameOrId("transactions");
+      for (const t of keep) {
+        const rec = new Record(txCol);
+        rec.set("owner", owner);
+        for (const k of ["external_id", "kind", "amount", "payee", "note", "account", "account_asset", "account_debt"]) rec.set(k, t[k]);
+        rec.set("date", pbDay(t.date));
+        if (t.kind === "income" && t.account_asset) {
+          const earner = earners.find((e) => s.fromEmployer(t.payee, e.getString("employer")));
+          if (earner) rec.set("earner", earner.id);
+        }
+        txApp.save(rec);
+        result.transactions++;
+      }
+      const payCol = txApp.findCollectionByNameOrId("debt_payments");
+      for (const p of plan.payments) {
+        const rec = new Record(payCol);
+        rec.set("owner", owner);
+        for (const k of ["external_id", "debt", "amount", "note", "from_asset", "from_external_id"]) rec.set(k, p[k]);
+        rec.set("date", pbDay(p.date));
+        txApp.save(rec);
+        result.payments++;
+      }
+
+      // Balances last: payments above move a debt's balance, and the bank's figure wins.
+      for (const a of found) {
+        const rec = records[a.id];
+        const use = rec.getString("use");
+        if (use !== "spending" && use !== "balance") continue;
+        if (rec.get("asset")) {
+          try {
+            const asset = txApp.findRecordById("assets", rec.get("asset"));
+            asset.set("value", a.balance);
+            if (a.balance_date) asset.set("as_of", pbDay(a.balance_date));
+            txApp.save(asset);
+          } catch (_) {}
+        } else if (rec.get("debt")) {
+          try {
+            const debt = txApp.findRecordById("debts", rec.get("debt"));
+            debt.set("balance", s.debtBalance(a.balance, debt.getString("type")));
+            txApp.save(debt);
+          } catch (_) {}
+        }
+        if (use === "spending" && spending.some((x) => x.id === rec.id)) {
+          rec.set("last_pulled", pbDay(s.dayOf(nowSec)));
+          txApp.save(rec);
+        }
+      }
+    });
+
+    conn.set("last_sync", pbNow());
+    conn.set("last_error", warnings.join("\n").slice(0, 4000));
+    app.save(conn);
+    return result;
+  } catch (err) {
+    const message = String((err && err.message) || err);
+    conn.set("last_error", message.slice(0, 4000));
+    try { app.save(conn); } catch (_) {}
+    throw err;
+  }
+}
+
+function findConnection(app, ownerId, id) {
+  let c = null;
+  try { c = app.findRecordById("simplefin_connections", id); } catch (_) {}
+  if (!c || c.get("owner") !== ownerId) throw new NotFoundError("That SimpleFIN connection isn't in your household.");
+  return c;
+}
+
+/** Claims a setup token, saves the connection and pulls its accounts. */
+function connectSimplefin(app, ownerId, setupToken, syncHourUtc) {
+  const accessUrl = claimSimplefin(setupToken);
+  const hour = Number(syncHourUtc);
+  const conn = new Record(app.findCollectionByNameOrId("simplefin_connections"));
+  conn.set("owner", ownerId);
+  conn.set("access_url", accessUrl);
+  conn.set("label", "SimpleFIN");
+  // 6 AM US Eastern unless the app says where the person is.
+  conn.set("sync_hour_utc", Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : 11);
+  app.save(conn);
+  let pulled = null;
+  let error = "";
+  try {
+    pulled = pullSimplefin(app, conn);
+  } catch (err) {
+    error = String((err && err.message) || err);
+  }
+  return { id: conn.id, pulled: pulled, error: error };
+}
+
+function syncSimplefinNow(app, ownerId, id) {
+  const conn = findConnection(app, ownerId, id);
+  try {
+    return pullSimplefin(app, conn);
+  } catch (err) {
+    throw new BadRequestError(String((err && err.message) || err));
+  }
+}
+
+function disconnectSimplefin(app, ownerId, id) {
+  app.delete(findConnection(app, ownerId, id));
+}
+
+/** Runs every hour at the instance's minute: pulls each connection whose morning it is. */
+function runDueSimplefin(app) {
+  const s = sfin();
+  const now = Date.now();
+  const all = app.findRecordsByFilter("simplefin_connections", "", "created", 0, 0);
+  for (const conn of all) {
+    const last = Date.parse(String(conn.getString("last_attempt") || "").replace(" ", "T"));
+    if (!s.isDue(now, Number.isFinite(last) ? last : 0, conn.getInt("sync_hour_utc"))) continue;
+    try {
+      const r = pullSimplefin(app, conn);
+      console.log("SimpleFIN pull for " + conn.id + ": " + r.transactions + " transactions, " + r.payments + " payments");
+    } catch (err) {
+      console.log("SimpleFIN pull for " + conn.id + " failed: " + ((err && err.message) || err));
+    }
+  }
+}
+
 module.exports = {
+  simplefinMinute, connectSimplefin, syncSimplefinNow, disconnectSimplefin, runDueSimplefin,
   applyVendor, backfillVendor, unmatchedStatements, mergeVendors,
   householdOf, requireHead, findMember,
   bearerOf, isApiToken, authWithApiToken, requireSession, listApiTokens, createApiToken, revokeApiToken,

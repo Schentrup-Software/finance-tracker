@@ -256,3 +256,44 @@ export interface PaystubLine extends BaseRecord {
   employer_paid: boolean;
   sort: number;
 }
+
+// ---------- SimpleFIN Bridge ----------
+
+/** A SimpleFIN setup token the household claimed. Its access URL never leaves the server. */
+export interface SimplefinConnection {
+  id: string;
+  owner: string;
+  /** The banks in it, e.g. "Sunshine Bank, Fidelity". */
+  label: string;
+  /** The UTC hour of the morning pull. */
+  sync_hour_utc: number;
+  last_sync: string;
+  last_attempt: string;
+  /** What went wrong on the last pull, or the Bridge's warnings. */
+  last_error: string;
+  created: string;
+  updated: string;
+}
+
+export interface SimplefinAccount {
+  id: string;
+  owner: string;
+  connection: string;
+  sfin_id: string;
+  org: string;
+  name: string;
+  currency: string;
+  /** As the bank reports it: what's owed on a card or loan is negative. */
+  balance: number;
+  available_balance: number;
+  balance_date: string;
+  /** "" until someone chooses. spending = budget transactions and balance; balance = balance only. */
+  use: "" | "spending" | "balance" | "ignore";
+  asset: string;
+  debt: string;
+  /** Transactions before this day are left out. */
+  sync_from: string;
+  last_pulled: string;
+  created: string;
+  updated: string;
+}

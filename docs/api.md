@@ -351,6 +351,49 @@ then saves it with calls you can also use from n8n:
    the account that paid), then `POST /api/sync/debts` again to set each card's balance as of
    the file's last day, since the payments lowered it.
 
+## SimpleFIN Bridge (bank balances and transactions)
+
+The **Bank accounts** page (the bank button at the top, and the first screen after sign-up)
+connects [SimpleFIN Bridge](https://beta-bridge.simplefin.org/). Each account SimpleFIN reports
+can bring its transactions into the budget, keep just its balance current, or be left out.
+n8n doesn't need to do anything for this; these endpoints are what the app uses.
+
+| Method | Path | Body | |
+| --- | --- | --- | --- |
+| `GET` | `/api/simplefin` | | `{ "minute" }`: the minute past the hour this server checks for pulls that are due |
+| `POST` | `/api/simplefin/connect` | `{ "setup_token", "sync_hour_utc" }` | Claims the setup token (each works once), saves the connection and pulls its account list. `→ { "id", "pulled", "error" }`; `error` is set if that first pull failed |
+| `POST` | `/api/simplefin/{id}/sync` | | Pulls now. `→ { "accounts", "transactions", "payments", "warnings" }` |
+| `DELETE` | `/api/simplefin/{id}` | | Forgets the connection and its account list. Transactions, payments, assets and debts it made stay |
+
+How a pull works:
+
+- The server pulls each connection **once every morning** at `sync_hour_utc` (6 AM where the
+  person was when they connected) and the instance's own minute. The minute is picked at random
+  the first time the server starts and kept in `pb_data/simplefin_minute`, so instances spread
+  out over the hour and away from the top of it (`SIMPLEFIN_MINUTE` overrides it). A server
+  that was off in the morning catches up within the hour once a day has gone by.
+- It asks for transactions since the last pull less five days (banks post late), or the first
+  time since the account's `sync_from` day; never more than 89 days back (the Bridge's limit).
+  Pending transactions are left out until they post.
+- Accounts with `use: "spending"`: money out is an `expense`, money in is `income`, with
+  `external_id` `sfin-<account id>-<transaction id>`, so overlapping pulls never duplicate.
+  Transactions on or after `sync_from` only. They link to the account with `account_asset` or
+  `account_debt`, get a vendor (and its envelope) from the payee, and a deposit whose payee
+  names an earner's employer is that earner's paycheck.
+- Money into a card that reads like a payment ("PAYMENT THANK YOU", "AUTOPAY") is a
+  `debt_payment`. The withdrawal that paid it (the same amount within five days on another
+  spending account) is the other side of it, not spending: it's left out, and the payment's
+  `from_asset` and `from_external_id` point at it, even when the two sides arrive on different days.
+- Accounts with `use: "spending"` or `"balance"` set their asset's `value` and `as_of`, or their
+  debt's `balance` (what the bank shows as owed, which SimpleFIN reports as negative), after
+  the transactions, so the bank's figure wins.
+- Problems (a bank that needs signing in again, the Bridge's rate-limit warnings) are saved on
+  the connection's `last_error` and shown on the Bank accounts page.
+
+The history import (above) can match each imported account to a SimpleFIN account: its balance
+fills in, and the SimpleFIN account takes over from the day after the file's last day
+(`sync_from`), so nothing is brought in twice.
+
 ## Vendors
 
 Every transaction can belong to a **vendor**: who the money went to. A transaction's `payee` is
@@ -585,6 +628,7 @@ One per household per `year`. Percentages are in percent (`7.5`).
 | `amount` | number ≥ 0, required | Lowers the debt's balance |
 | `note` | text | |
 | `external_id` | text | Unique per household |
+| `from_external_id` | text | For a card payment pulled from SimpleFIN, the withdrawal that paid it (`sfin-...`) |
 
 ### `assets`
 
@@ -593,7 +637,7 @@ One per household per `year`. Percentages are in percent (`7.5`).
 | `name` | text, required | |
 | `type` | `real_estate` `vehicle` `collectible` `checking` `savings` `brokerage` `401k` `ira` `roth_ira` `hsa` `529` `crypto` `cash` `other` | |
 | `institution` | text | |
-| `value` | number | |
+| `value` | number | Can be negative (an overdrawn account) |
 | `as_of` | date | When the value was last checked |
 | `debts` | relation → debts (many) | Debts tied to this asset; equity = value − their balances |
 | `notes` | text | |
@@ -639,6 +683,36 @@ One per household per `year`. Percentages are in percent (`7.5`).
 | `asset` | relation → assets | For HSA and retirement lines: the account it goes into |
 | `employer_paid` | bool | Paid by the employer on top of gross pay, not a deduction |
 | `sort` | number | |
+
+### `simplefin_connections` — SimpleFIN setup tokens the household claimed
+
+Read-only through the collection API; made, pulled and removed with `/api/simplefin`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `label` | text | The banks in it |
+| `sync_hour_utc` | number 0–23 | The hour (UTC) of the morning pull |
+| `last_sync` | date | Last pull that worked |
+| `last_attempt` | date | Last pull tried |
+| `last_error` | text | What went wrong last time, or the Bridge's warnings |
+
+The access URL (with its login) is stored in a hidden field and never sent to the browser or the API.
+
+### `simplefin_accounts` — accounts SimpleFIN reports
+
+The server adds them and keeps `name`, `org`, `currency`, `balance`, `available_balance`,
+`balance_date` and `last_pulled` current; only `use`, `asset`, `debt` and `sync_from` can be changed.
+
+| Field | Type | |
+| --- | --- | --- |
+| `connection` | relation → simplefin_connections | |
+| `sfin_id` | text | SimpleFIN's account id |
+| `org`, `name`, `currency` | text | As the bank names them |
+| `balance` | number | As the bank reports it: owed is negative |
+| `use` | `spending` `balance` `ignore`, or empty until chosen | |
+| `asset` / `debt` | relation → assets / debts | What it fills (one or the other) |
+| `sync_from` | date | Transactions before this day are left out |
+| `last_pulled` | date | Day of the last pull with its transactions |
 
 ## 5. Errors
 

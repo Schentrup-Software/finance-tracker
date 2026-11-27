@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import {
-  errorMessage, importBudgets, listAssets, listDebts, listEnvelopes, syncRecords, toPbDate, updateAsset, updateDebt,
-  updateEnvelope,
+  errorMessage, importBudgets, listAssets, listDebts, listEnvelopes, listSimplefinAccounts, pullSimplefin, syncRecords,
+  toPbDate, updateAsset, updateDebt, updateEnvelope, updateSimplefinAccount,
 } from "~/backend/api";
-import { COLORS, type Asset, type Debt, type Envelope } from "~/backend/types";
+import { COLORS, type Asset, type Debt, type Envelope, type SimplefinAccount } from "~/backend/types";
 import { ErrorNote, Modal, cx } from "~/components/ui";
 import {
   accountExternalId, envelopeExternalId, guessEnvelopeStyle, parseCsv, planImport,
@@ -11,6 +11,7 @@ import {
 } from "~/lib/importer";
 import { shortDate } from "~/lib/dates";
 import { money, parseMoney } from "~/lib/money";
+import { defaultUse, suggestMatch } from "~/lib/simplefin";
 
 interface EnvelopeChoice {
   name: string;
@@ -31,6 +32,19 @@ interface AccountChoice {
   asset: Asset | null;
   debt: Debt | null;
   balance: string;
+  /** The SimpleFIN account it is, if any: its balance fills in, and new transactions come from it after the import. */
+  sfin: string;
+}
+
+/** The day after a "YYYY-MM-DD" day. */
+function dayAfter(day: string): string {
+  const d = new Date(Date.UTC(+day.slice(0, 4), +day.slice(5, 7) - 1, +day.slice(8, 10) + 1));
+  return d.toISOString().slice(0, 10);
+}
+
+/** What a SimpleFIN balance means for this kind of account: what a card owes is positive. */
+function sfinAmount(a: SimplefinAccount, card: boolean): number {
+  return card ? Math.max(0, -a.balance) : a.balance;
 }
 
 const ACCOUNT_KINDS: { value: AccountKind | "skip"; label: string }[] = [
@@ -49,6 +63,7 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
   const [fileName, setFileName] = useState("");
   const [choices, setChoices] = useState<EnvelopeChoice[]>([]);
   const [accounts, setAccounts] = useState<AccountChoice[]>([]);
+  const [sfinAccounts, setSfinAccounts] = useState<SimplefinAccount[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -71,7 +86,12 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
       if (/\.xlsx?$/i.test(file.name)) throw new Error("Save the spreadsheet as CSV first (File → Save As → CSV), then pick that file.");
       const p = planImport(parseCsv(await file.text()));
       if (p.transactions.length === 0) throw new Error("No transactions were found in that file.");
-      const [existing, assets, debts] = await Promise.all([listEnvelopes(), listAssets(), listDebts()]);
+      const [existing, assets, debts, sfinAll] = await Promise.all([
+        listEnvelopes(), listAssets(), listDebts(), listSimplefinAccounts().catch(() => [] as SimplefinAccount[]),
+      ]);
+      const sfin = sfinAll.filter((s) => s.use !== "ignore");
+      setSfinAccounts(sfin);
+      const taken = new Set<string>();
       const find = <T extends { name: string; external_id: string }>(list: T[], name: string) =>
         list.find((r) => r.external_id === accountExternalId(name)) ??
         list.find((r) => r.name.trim().toLowerCase() === name.toLowerCase()) ?? null;
@@ -82,7 +102,11 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
         const kind = debt && !asset ? "credit_card"
           : asset && !debt && ["checking", "savings", "cash"].includes(asset.type) ? asset.type as AccountKind
           : a.type;
-        return { found: a, kind, asset, debt, balance: "" };
+        // A SimpleFIN account already filling this asset or debt, or the one whose name fits best.
+        const linked = sfin.find((s) => (asset && s.asset === asset.id) || (debt && s.debt === debt.id));
+        const match = linked ?? suggestMatch(a.name, kind, sfin.filter((s) => !s.asset && !s.debt && !taken.has(s.id)));
+        if (match) taken.add(match.id);
+        return { found: a, kind, asset, debt, balance: "", sfin: match?.id ?? "" };
       }));
       const byName = new Map(existing.map((e) => [e.name.trim().toLowerCase(), e]));
       const yearAgo = `${Number(p.lastDate.slice(0, 4)) - 1}${p.lastDate.slice(4)}`;
@@ -122,10 +146,12 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
       const assetRecords: object[] = [];
       const debtRecords: object[] = [];
       const finalBalances: object[] = [];
+      const sfinById = new Map(sfinAccounts.map((s) => [s.id, s]));
       for (const a of accounts) {
         if (a.kind === "skip") continue;
         const name = a.found.name;
-        const typed = a.balance === "" ? null : parseMoney(a.balance);
+        const fromBank = sfinById.get(a.sfin);
+        const typed = a.balance !== "" ? parseMoney(a.balance) : fromBank ? sfinAmount(fromBank, a.kind === "credit_card") : null;
         if (a.kind === "credit_card") {
           const ext = a.debt?.external_id || accountExternalId(name);
           if (a.debt && !a.debt.external_id) await updateDebt(a.debt.id, { external_id: ext });
@@ -192,11 +218,45 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
       }
       if (finalBalances.length) await syncRecords("debts", finalBalances);
 
+      // Matched SimpleFIN accounts take over from the day after the file ends.
+      const linkedAccounts = accounts.filter((a) => a.kind !== "skip" && a.sfin);
+      let pullNote = "";
+      if (linkedAccounts.length) {
+        setProgress("Linking SimpleFIN accounts…");
+        const [assetsNow, debtsNow] = await Promise.all([listAssets(), listDebts()]);
+        const connections = new Set<string>();
+        for (const a of linkedAccounts) {
+          const card = a.kind === "credit_card";
+          const ext = card ? debtIds.get(a.found.name) : assetIds.get(a.found.name);
+          const target = card ? debtsNow.find((d) => d.external_id === ext) : assetsNow.find((x) => x.external_id === ext);
+          if (!target) continue;
+          await updateSimplefinAccount(a.sfin, {
+            use: defaultUse(a.kind), asset: card ? "" : target.id, debt: card ? target.id : "",
+            sync_from: toPbDate(dayAfter(plan.lastDate)),
+          });
+          const s = sfinById.get(a.sfin);
+          if (s) connections.add(s.connection);
+        }
+        setProgress("Pulling new transactions from SimpleFIN…");
+        let pulled = 0;
+        for (const c of connections) {
+          try {
+            pulled += (await pullSimplefin(c)).transactions;
+          } catch (err) {
+            pullNote = ` SimpleFIN couldn't pull just now (${errorMessage(err)}); it will try again tomorrow morning.`;
+          }
+        }
+        if (!pullNote) {
+          pullNote = ` ${linkedAccounts.length} account${linkedAccounts.length === 1 ? " is" : "s are"} linked to SimpleFIN` +
+            `, with ${pulled} newer transaction${pulled === 1 ? "" : "s"} pulled.`;
+        }
+      }
+
       setProgress(null);
       const made = assetIds.size + debtIds.size;
       setDone(`Imported ${total.toLocaleString()} transactions, ${choices.length} envelopes` +
         (made ? `, ${made} account${made === 1 ? "" : "s"} and ${payments.length} card payment${payments.length === 1 ? "" : "s"}` : "") +
-        ". Importing the same file again won't make duplicates.");
+        ". Importing the same file again won't make duplicates." + pullNote);
       onDone();
     } catch (err) {
       setProgress(null);
@@ -255,6 +315,8 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
                 Checking, savings and cash accounts go on Assets, and credit cards on Debts. Transfers from an account
                 into a card become payments on the card. Check each guess, and enter what the account held
                 (or what the card owed) on {shortDate(plan.lastDate)}.
+                {sfinAccounts.length > 0 && <> Match each one to its SimpleFIN account to fill in today's balance and
+                  bring in transactions after {shortDate(plan.lastDate)} every morning.</>}
               </p>
               <ul className="mt-3 space-y-2">
                 {accounts.map((a, i) => {
@@ -280,9 +342,23 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
                             </button>
                           ))}
                         </div>
+                        {a.kind !== "skip" && sfinAccounts.length > 0 && (
+                          <select className="input appearance-none py-2 text-sm sm:col-span-2" aria-label={`${a.found.name} SimpleFIN account`}
+                            value={a.sfin} onChange={(e) => changeAccount(i, { sfin: e.target.value })}>
+                            <option value="">Not in SimpleFIN (enter by hand)</option>
+                            {sfinAccounts.map((s) => (
+                              <option key={s.id} value={s.id}
+                                disabled={accounts.some((o, j) => j !== i && o.kind !== "skip" && o.sfin === s.id)}>
+                                SimpleFIN: {s.name}{s.org ? ` (${s.org})` : ""}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                         {a.kind !== "skip" && (
                           <SmallMoney label={card ? `${a.found.name} owed` : `${a.found.name} balance`}
-                            placeholder={existing
+                            placeholder={sfinAccounts.some((s) => s.id === a.sfin)
+                              ? `${money(sfinAmount(sfinAccounts.find((s) => s.id === a.sfin)!, card))} from SimpleFIN`
+                              : existing
                               ? `Keep ${money(card ? a.debt!.balance : a.asset!.value)}`
                               : `${card ? "Owed" : "Balance"} ${shortDate(plan.lastDate)}`}
                             allowNegative={!card} value={a.balance} onChange={(v) => changeAccount(i, { balance: v })} />

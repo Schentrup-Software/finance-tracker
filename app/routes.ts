@@ -7,6 +7,7 @@ export default [
     route("/budget", "routes/budget.tsx"),
     route("/debts", "routes/debts.tsx"),
     route("/assets", "routes/assets.tsx"),
+    route("/accounts", "routes/accounts.tsx"),
     route("/household", "routes/household.tsx"),
     route("/api-tokens", "routes/api-tokens.tsx"),
   ]),

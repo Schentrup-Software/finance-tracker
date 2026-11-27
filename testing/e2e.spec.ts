@@ -30,6 +30,13 @@ test("first visit creates the account, then sign-up closes", async ({ page, requ
   await page.getByLabel("Email").fill(EMAIL);
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Create account" }).click();
+
+  // A new household is offered SimpleFIN first, and can skip it.
+  await expect(page).toHaveURL(/\/accounts\?welcome=1/);
+  await expect(page.getByRole("heading", { name: "Welcome! Connect your banks first?" })).toBeVisible();
+  await expect(page.getByLabel("Setup token")).toBeVisible();
+  await shot(page, "02-connect-banks");
+  await page.getByRole("button", { name: "Skip, I'll enter accounts by hand" }).click();
   await expect(page).toHaveURL(/\/budget/);
 
   const res = await request.get("http://localhost:8090/api/finance/setup");
@@ -528,4 +535,69 @@ test("API tokens: make one, use it, revoke it", async ({ page, request }) => {
   await expect(page.getByText("No tokens yet")).toBeVisible();
   const after = await request.get("http://localhost:8090/api/collections/envelopes/records", { headers: { Authorization: token } });
   expect(after.status()).toBe(401);
+});
+
+test("SimpleFIN: connect, choose what each account is for, pull, and match an import", async ({ page }) => {
+  // A stand-in Bridge (testing/fixtures/simplefin-mock.cjs) on :8091.
+  const { spawn } = await import("node:child_process");
+  const mock = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/simplefin-mock.cjs", import.meta.url))], { stdio: "ignore" });
+  try {
+    let token = "";
+    for (let i = 0; i < 50 && !token; i++) {
+      token = await fetch("http://localhost:8091/token").then((r) => r.text()).catch(() => "");
+      if (!token) await new Promise((r) => setTimeout(r, 100));
+    }
+
+    await signIn(page);
+    await page.getByRole("button", { name: "Bank accounts" }).click();
+    await page.getByLabel("Setup token").fill(token);
+    await page.getByRole("button", { name: "Connect" }).click();
+    await expect(page.getByRole("heading", { name: "Sunshine Bank" })).toBeVisible();
+    await expect(page.getByText(/pulls every morning at/)).toBeVisible();
+    await expect(page.getByText(/Choose what these 4 accounts are for/)).toBeVisible();
+
+    // The guesses: checking and the card bring in transactions, savings and the mortgage just a balance.
+    const use = (name: string, option: string) => page.getByRole("radiogroup", { name: `${name} use` }).getByRole("radio", { name: option });
+    await expect(use("Everyday Checking", "Budget transactions")).toHaveAttribute("aria-checked", "true");
+    await expect(use("Sunshine Visa", "Budget transactions")).toHaveAttribute("aria-checked", "true");
+    await expect(use("High Yield Savings", "Balance only")).toHaveAttribute("aria-checked", "true");
+    await expect(use("Home Mortgage", "Balance only")).toHaveAttribute("aria-checked", "true");
+    // The mortgage already on Debts (same name) is picked; the card would be a new credit card.
+    await expect(page.getByLabel("Home Mortgage goes on").locator("option:checked")).toHaveText("Debts: Home mortgage");
+    await expect(page.getByLabel("Sunshine Visa kind")).toHaveValue("credit_card");
+    // The Visa and Checking from the history import are already in the app: fill those instead of new ones.
+    await page.getByLabel("Sunshine Visa goes on").selectOption({ label: "Debts: Visa" });
+    await page.getByLabel("Everyday Checking goes on").selectOption({ label: "Assets: Checking" });
+    await use("High Yield Savings", "Don't use").click();
+    const from = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    await page.getByLabel("Everyday Checking transactions from").fill(from);
+    await page.getByLabel("Sunshine Visa transactions from").fill(from);
+    await shot(page, "16-choose-accounts");
+
+    await page.getByRole("button", { name: "Save 4 accounts and pull" }).click();
+    await expect(page.getByText(/Pulled 4 accounts: 4 new transactions and 1 card payment/)).toBeVisible();
+    await expect(page.getByText(/transactions through/).first()).toBeVisible();
+    await shot(page, "17-bank-accounts");
+
+    // Debts and Assets show the bank's balances.
+    await page.getByRole("link", { name: /Debts/ }).click();
+    await expect(page.getByText("$612.40").first()).toBeVisible();
+    await expect(page.getByText("$245,000").first()).toBeVisible();
+    await page.getByRole("link", { name: /Assets/ }).click();
+    await expect(page.getByText("High Yield Savings")).toHaveCount(0); // not used
+    await expect(page.getByText("$2,450.10").first()).toBeVisible();
+
+    // A history import offers to match its accounts to SimpleFIN's.
+    await page.getByRole("link", { name: /Budget/ }).click();
+    await page.getByRole("button", { name: /Import history from a spreadsheet/ }).click();
+    const d = page.getByRole("dialog");
+    await d.getByLabel("History file").setInputFiles(HISTORY_CSV);
+    await expect(d.getByLabel("Visa SimpleFIN account")).toHaveValue(/.+/);
+    await expect(d.getByLabel("Visa owed", { exact: true })).toHaveAttribute("placeholder", "$612.40 from SimpleFIN");
+    await expect(d.getByLabel("Checking SimpleFIN account")).toHaveValue(/.+/);
+    await shot(page, "18-import-match");
+    await d.getByRole("button", { name: "Close" }).click();
+  } finally {
+    mock.kill();
+  }
 });

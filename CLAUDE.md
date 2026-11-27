@@ -39,3 +39,7 @@ npm run test:e2e   # Playwright walkthrough; needs RESET=1 npm run pb first
   `pb_hooks/finance/lib.js`; status updates there use a direct SQL update to avoid re-entering hooks.
 - The paystub reader is `app/lib/paystub.ts` (pure, unit tested) fed by `app/lib/pdfText.ts`.
   Sample PDF: `testing/fixtures/paystub.pdf` (regenerate with `node testing/fixtures/make-paystub.cjs`).
+- SimpleFIN Bridge: the pure parts (token decoding, what a pull adds, card-payment pairing, when it's due) are in
+  `pb_hooks/finance/simplefin.js` (tested by `testing/unit/simplefin.test.ts`); HTTP and saving are in `lib.js`.
+  The hourly cron runs at a per-instance random minute kept in `pb_data/simplefin_minute`. Tests use the stand-in
+  Bridge `testing/fixtures/simplefin-mock.cjs` on :8091 (api-smoke starts it; the e2e test spawns it).

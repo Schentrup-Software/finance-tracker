@@ -119,6 +119,15 @@ hand the file to an OpenClaw agent you run:
 The paystub goes only to your own gateway, and from there to whatever model that agent
 uses. Keep the gateway on your private network.
 
+## Bank accounts from SimpleFIN
+
+Nothing to set up in TrueNAS. After signing up, the app offers to connect
+[SimpleFIN Bridge](https://beta-bridge.simplefin.org/) (or later, the bank button at the top):
+make a setup token on the Bridge and paste it in. The server then pulls balances and new
+transactions once every morning around 6 AM (your time when you connected), at a minute past
+the hour it picks at random the first time it starts and keeps in `pb_data/simplefin_minute`.
+The container needs to reach `beta-bridge.simplefin.org` over https.
+
 If reading fails (for example "The OpenClaw agent answered with HTTP 403."), open the
 PocketBase dashboard → **Logs** and click the `POST /api/paystubs/read` entry. Its
 `details` show the URL called, the agent, whether a token was sent, and the gateway's

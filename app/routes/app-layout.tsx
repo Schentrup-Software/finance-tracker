@@ -32,6 +32,7 @@ export default function AppLayout() {
         </div>
         <div className="flex items-center gap-3">
           <span className="hidden text-sm font-bold opacity-70 md:inline">{currentUserEmail()}</span>
+          <RoundButton label="Bank accounts" icon="bank" onClick={() => navigate("/accounts")} />
           <RoundButton label="Household" icon="people" onClick={() => navigate("/household")} />
           <RoundButton label="API tokens" icon="key" onClick={() => navigate("/api-tokens")} />
           <RoundButton label="Sign out" icon="logout" onClick={() => { signOut(); navigate("/login"); }} />
