@@ -50,10 +50,14 @@ type Step = "pick" | "reading" | "review" | "saving" | "done";
 
 const baseName = (n: string) => n.split("/").pop() || n;
 
-/** A PDF by its name, type or first bytes ("%PDF"). */
-function isPdf(file: File, bytes: Uint8Array) {
-  return /\.pdf$/i.test(file.name) || file.type === "application/pdf" ||
-    (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46);
+/** Starts with "%PDF", as every PDF does. */
+function startsLikePdf(bytes: Uint8Array) {
+  return bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
+}
+
+/** A PDF picked on its own (rather than a zip), by its contents. */
+function isPdf(_file: File, bytes: Uint8Array) {
+  return startsLikePdf(bytes);
 }
 
 /**
@@ -90,7 +94,8 @@ export function BulkPaystubModal({ earners, debts, assets, onClose, onSaved }: {
           ? [{ name: picked.name, data: bytes }]
           : pages.map((data, i) => ({ name: `${stem} page ${i + 1}.pdf`, data }));
       } else {
-        pdfs = (await readZip(bytes)).filter((f) => /\.pdf$/i.test(f.name));
+        // Only PDFs are unzipped (a zip inside the zip, or anything else, is skipped).
+        pdfs = (await readZip(bytes, (name) => /\.pdf$/i.test(name))).filter((f) => startsLikePdf(f.data));
         if (pdfs.length === 0) return setError("There are no PDFs in that zip.");
       }
     } catch (err) {

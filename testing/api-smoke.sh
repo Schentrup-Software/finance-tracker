@@ -225,6 +225,8 @@ KIM_STUB=$(bulk "$E8" "[$(stub_json kim.pdf 0 2027-05-07 2000 1500 0 0 "\"earner
 check "a stub can name its own earner" "$(j -H "$A" "$B/api/collections/paystubs/records/$KIM_STUB" | field '["earner"]')" "$E5"
 OE8=$(j -H "$OTHER" -X POST "$B/api/collections/earners/records" -d '{"name":"Not mine"}' | field '["id"]')
 check "a stub can't name another household's earner" "$(bulk "$E8" "[$(stub_json x.pdf 0 2027-05-21 1 1 0 0 "\"earner\":\"$OE8\"")]" -F "files=@/tmp/smoke-s5.pdf;type=application/pdf" | field '["status"]')" "400"
+printf '<html><script>alert(1)</script></html>' > /tmp/smoke-fake.pdf
+check "a file that isn't really a PDF is refused" "$(bulk "$E8" "[$(stub_json fake.pdf 0 2027-06-04 1 1 0 0)]" -F "files=@/tmp/smoke-fake.pdf;type=application/pdf" | field '["status"]')" "400"
 check "another household can't bulk upload for my earner" "$(curl -s -H "$OTHER" -X POST "$B/api/paystubs/bulk" --form-string "earner=$E8" --form-string "stubs=[$(stub_json x.pdf 0 2027-04-02 1 1 0 0)]" -F "files=@/tmp/smoke-s5.pdf;type=application/pdf" | field '["status"]')" "400"
 
 # Annual envelopes, imported months and opening balances

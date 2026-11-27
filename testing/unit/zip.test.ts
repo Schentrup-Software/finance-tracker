@@ -1,12 +1,12 @@
 import { deflateRawSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { crc32, makeZip, readZip } from "~/lib/zip";
+import { ZIP_LIMITS, crc32, makeZip, readZip } from "~/lib/zip";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 /** A ZIP with deflated entries, the way Finder and Windows make them. */
-function deflatedZip(files: { name: string; text: string }[]): Uint8Array {
+function deflatedZip(files: { name: string; text: string; claimed?: number }[]): Uint8Array {
   const parts: Buffer[] = [];
   const central: Buffer[] = [];
   let offset = 0;
@@ -27,7 +27,7 @@ function deflatedZip(files: { name: string; text: string }[]): Uint8Array {
     dir.writeUInt16LE(8, 10);
     dir.writeUInt32LE(crc32(raw), 16);
     dir.writeUInt32LE(data.length, 20);
-    dir.writeUInt32LE(raw.length, 24);
+    dir.writeUInt32LE(f.claimed ?? raw.length, 24);
     dir.writeUInt16LE(name.length, 28);
     dir.writeUInt32LE(offset, 42);
     parts.push(local, name, data);
@@ -61,6 +61,36 @@ describe("reading a zip", () => {
     const files = await readZip(zip);
     expect(files.map((f) => f.name)).toEqual(["stubs/2026-11-13.pdf"]);
     expect(dec.decode(files[0].data)).toBe("%PDF-1.4 paystub ".repeat(50));
+  });
+
+  it("stops a zip bomb while inflating, whatever size its headers claim", async () => {
+    const bomb = deflatedZip([{ name: "stub.pdf", text: "0".repeat(30 << 20), claimed: 100 }]);
+    expect(bomb.length).toBeLessThan(100_000);
+    await expect(readZip(bomb)).rejects.toThrow("more than 20 MB unzipped");
+  });
+
+  it("caps the total unzipped and the number of files", async () => {
+    const files = Array.from({ length: 4 }, (_, i) => ({ name: `${i}.pdf`, text: "x".repeat(1000) }));
+    await expect(readZip(deflatedZip(files), undefined, { ...ZIP_LIMITS, maxTotalBytes: 2500 })).rejects.toThrow("adds up to more than");
+    await expect(readZip(deflatedZip(files), undefined, { ...ZIP_LIMITS, maxFiles: 3 })).rejects.toThrow("more than 3 files");
+  });
+
+  it("only unzips the files asked for, and never uses names as paths", async () => {
+    const zip = deflatedZip([
+      { name: "../../etc/evil.pdf", text: "%PDF" },
+      { name: "inner.zip", text: "PK nested" },
+      { name: "notes.txt", text: "hi" },
+    ]);
+    const files = await readZip(zip, (n) => n.endsWith(".pdf"));
+    expect(files.map((f) => f.name)).toEqual(["../../etc/evil.pdf"]); // a label only; nothing is written to disk
+  });
+
+  it("says when an entry points outside the archive", async () => {
+    const zip = makeZip([{ name: "a.pdf", data: enc.encode("one") }]);
+    const view = new DataView(zip.buffer);
+    const dir = zip.length - 22 - (46 + 5);
+    view.setUint32(dir + 20, 1 << 30, true); // compressed size far past the end
+    await expect(readZip(zip)).rejects.toThrow("damaged");
   });
 
   it("says so when the file isn't a zip", async () => {

@@ -19,7 +19,10 @@ export async function pdfPageRows(file: Blob, maxPages = Infinity): Promise<stri
   const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  // A paystub never needs scripts or fonts compiled to code: keep pdf.js from evaluating anything.
+  const doc = await pdfjs.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false, enableXfa: false,
+  }).promise;
   const pages: string[][][] = [];
   for (let p = 1; p <= Math.min(doc.numPages, maxPages); p++) {
     const page = await doc.getPage(p);

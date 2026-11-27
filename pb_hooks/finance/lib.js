@@ -544,7 +544,7 @@ function dollars(n) {
 
 /** Checks one stub sent by the app and returns it cleaned up. */
 function cleanStub(app, ownerId, raw, index, fileCount) {
-  const name = String((raw && raw.name) || "paystub " + (index + 1));
+  const name = String((raw && raw.name) || "paystub " + (index + 1)).slice(0, 200);
   const fail = (why) => badRequest("The paystub " + name + ": " + why);
   if (!raw || typeof raw !== "object") throw fail("not a paystub.");
   const payDate = dayOf(raw.pay_date);

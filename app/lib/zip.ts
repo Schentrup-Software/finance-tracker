@@ -84,13 +84,31 @@ export function makeZip(entries: ZipEntry[]): Uint8Array<ArrayBuffer> {
 
 // ---------- Reading a ZIP ----------
 
+/** Limits that keep a hostile ZIP (a "zip bomb") from eating the browser's memory. */
+export interface ZipLimits {
+  /** Most files read out of it (folders and macOS extras don't count). */
+  maxFiles: number;
+  /** Largest file, unzipped, in bytes. */
+  maxFileBytes: number;
+  /** All files together, unzipped, in bytes. */
+  maxTotalBytes: number;
+}
+
+export const ZIP_LIMITS: ZipLimits = { maxFiles: 500, maxFileBytes: 20 << 20, maxTotalBytes: 300 << 20 };
+
 /**
  * Reads the files out of a ZIP archive (as made by Finder, Windows or `zip`):
  * stored or deflated entries, read through the central directory. Folders,
  * macOS resource forks (__MACOSX/, ._name) and hidden files are left out.
- * Names keep their folder path.
+ * Names keep their folder path. They are only labels: nothing is written to disk
+ * by name, so "../" names or symlink entries can't reach anything. `keep` picks
+ * which files to unzip (by name), and only those count toward the limits.
+ * Sizes are counted while inflating, not taken from the archive's own headers,
+ * which a hostile archive can fake.
  */
-export async function readZip(bytes: Uint8Array): Promise<ZipEntry[]> {
+export async function readZip(
+  bytes: Uint8Array, keep: (name: string) => boolean = () => true, limits: ZipLimits = ZIP_LIMITS,
+): Promise<ZipEntry[]> {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   // The end-of-central-directory record is in the last 64 KB (after an optional comment).
   let eocd = -1;
@@ -105,6 +123,7 @@ export async function readZip(bytes: Uint8Array): Promise<ZipEntry[]> {
   const utf8 = new TextDecoder("utf-8");
   const latin = new TextDecoder("latin1");
   const out: ZipEntry[] = [];
+  let total = 0;
   for (let n = 0; n < count; n++) {
     if (view.getUint32(at, true) !== 0x02014b50) throw new Error("That ZIP archive is damaged.");
     const flags = view.getUint16(at + 8, true);
@@ -119,21 +138,56 @@ export async function readZip(bytes: Uint8Array): Promise<ZipEntry[]> {
     at += 46 + nameLen + extraLen + commentLen;
 
     const base = name.split("/").pop() ?? "";
-    if (name.endsWith("/") || name.startsWith("__MACOSX/") || !base || base.startsWith(".")) continue;
+    if (name.endsWith("/") || name.startsWith("__MACOSX/") || !base || base.startsWith(".") || !keep(name)) continue;
+    if (out.length >= limits.maxFiles) throw new Error(`That zip has more than ${limits.maxFiles} files. Split it into smaller zips.`);
     if (flags & 0x0001) throw new Error(`${base} is password-protected. Zip the paystubs without a password.`);
 
+    if (local + 30 > bytes.length || view.getUint32(local, true) !== 0x04034b50) throw new Error("That ZIP archive is damaged.");
     const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+    if (start + size > bytes.length) throw new Error("That ZIP archive is damaged.");
     const raw = bytes.subarray(start, start + size);
+    const cap = Math.min(limits.maxFileBytes, limits.maxTotalBytes - total);
+    const tooBig = () => new Error(
+      cap < limits.maxFileBytes
+        ? `Everything in that zip adds up to more than ${limits.maxTotalBytes >> 20} MB unzipped. Split it into smaller zips.`
+        : `${base} is more than ${limits.maxFileBytes >> 20} MB unzipped, too big for a paystub.`,
+    );
     let data: Uint8Array;
-    if (method === 0) data = raw.slice();
-    else if (method === 8) data = await inflateRaw(raw);
-    else throw new Error(`${base} is compressed in a way this can't read. Zip it with the usual settings.`);
+    if (method === 0) {
+      if (raw.length > cap) throw tooBig();
+      data = raw.slice();
+    } else if (method === 8) {
+      data = await inflateRaw(raw, cap, tooBig);
+    } else throw new Error(`${base} is compressed in a way this can't read. Zip it with the usual settings.`);
+    total += data.length;
     out.push({ name, data });
   }
   return out;
 }
 
-async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
+/** Inflates, stopping as soon as the output passes `cap` bytes. */
+async function inflateRaw(data: Uint8Array, cap: number, tooBig: () => Error): Promise<Uint8Array> {
   const stream = new Blob([data as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > cap) {
+        await reader.cancel().catch(() => {});
+        throw tooBig();
+      }
+      chunks.push(value);
+    }
+  } catch (err) {
+    if (err instanceof Error && size > cap) throw err;
+    throw new Error("A file in that zip is damaged.");
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) { out.set(c, at); at += c.length; }
+  return out;
 }
