@@ -182,6 +182,53 @@ S7=$(j -H "$A" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\":\"$
 check "saving the real paystub takes over its deposit" "$(j -H "$A" "$B/api/collections/paystubs/records/$S7" | field '["transaction"]')" "$D17"
 check "and removes the copy that was on it" "$(j -H "$A" "$B/api/collections/paystubs/records?filter=earner='$E7'" | field '["totalItems"]')" "1"
 
+# Bulk paystub upload: a zip's PDFs are read in the app and sent together, all or nothing
+mkpdf() { printf '%%PDF-1.4\n%% %s\n%%%%EOF\n' "$1" > "/tmp/smoke-$1.pdf"; }
+for n in s1 s2 s3 s4 s5; do mkpdf "$n"; done
+bulk() { curl -s -H "$A" -X POST "$B/api/paystubs/bulk" --form-string "earner=$1" --form-string "stubs=$2" "${@:3}"; }
+stub_json() { echo "{\"name\":\"$1\",\"file\":$2,\"pay_date\":\"$3\",\"gross\":$4,\"net\":$5,\"ytd_gross\":$6,\"ytd_net\":$7${8:+,$8}}"; }
+E8=$(j -H "$A" -X POST "$B/api/collections/earners/records" -d '{"name":"Rae","pay_frequency":"biweekly"}' | field '["id"]')
+j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E8\",\"amount\":2000,\"date\":\"2027-01-08 12:00:00.000Z\"}" > /dev/null
+j -H "$A" -X POST "$B/api/collections/paystubs/records" -d "{\"earner\":\"$E8\",\"pay_date\":\"2027-01-08 12:00:00.000Z\",\"gross\":3000,\"net\":2000,\"source\":\"upload\"}" > /dev/null
+B2=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E8\",\"amount\":2000,\"date\":\"2027-01-22 12:00:00.000Z\"}" | field '["id"]')
+B3=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E8\",\"amount\":2000.01,\"date\":\"2027-02-05 12:00:00.000Z\"}" | field '["id"]')
+B4=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E8\",\"amount\":2050,\"date\":\"2027-02-19 12:00:00.000Z\"}" | field '["id"]')
+B5=$(j -H "$A" -X POST "$B/api/collections/transactions/records" -d "{\"kind\":\"income\",\"earner\":\"$E8\",\"amount\":2050,\"date\":\"2027-03-19 12:00:00.000Z\"}" | field '["id"]')
+LOAN3=$(j -H "$A" -X POST "$B/api/collections/debts/records" -d '{"name":"Rae 401k loan","type":"401k_loan","balance":1000}' | field '["id"]')
+copy_of() { j -H "$A" "$B/api/collections/paystubs/records?filter=transaction='$1'" | field '["items"][0]'"$2"; }
+check "the deposits a cent apart got copied paystubs" "$(copy_of "$B3" '["source"]')" "repeat"
+check "the different one waits for a paystub" "$(status_of "$B4")" "needs_paystub"
+
+# Drift: the last stub's year-to-date gross doesn't add up, so nothing is kept.
+DRIFT="[$(stub_json feb05.pdf 0 2027-02-05 3000 2000.01 9000 6000.01),$(stub_json feb19.pdf 1 2027-02-19 3100 2050 12100 8050.01 "\"lines\":[{\"category\":\"401k_loan\",\"amount\":100,\"debt\":\"$LOAN3\"}]"),$(stub_json mar05.pdf 2 2027-03-05 3000 2000 15500 10050.01)]"
+OUT=$(bulk "$E8" "$DRIFT" -F "files=@/tmp/smoke-s1.pdf;type=application/pdf" -F "files=@/tmp/smoke-s2.pdf;type=application/pdf" -F "files=@/tmp/smoke-s3.pdf;type=application/pdf")
+check "a stub whose year-to-date pay drifted fails the upload" "$(echo "$OUT" | field '["status"]')" "400"
+check "and says which one and by how much" "$(echo "$OUT" | python3 -c 'import sys,json; m=json.load(sys.stdin)["message"]; print("mar05.pdf" in m and "$15,500.00" in m and "$15,100.00" in m)')" "True"
+check "the PDF it attached to a copied paystub is rolled back" "$(copy_of "$B3" '["file"]')" ""
+check "the paystub it added is rolled back" "$(j -H "$A" "$B/api/collections/paystubs/records?filter=earner='$E8'" | field '["totalItems"]')" "3"
+check "its deposit waits for a paystub again" "$(status_of "$B4")" "needs_paystub"
+check "the later deposit it backfilled is rolled back" "$(status_of "$B5")" "needs_paystub"
+check "its loan payment is rolled back" "$(balance_of "$LOAN3")" "1000"
+
+# The same upload with the right figures goes through.
+GOOD="[$(stub_json jan22.pdf 0 2027-01-22 3000 2000 6000 4000),$(stub_json feb05.pdf 1 2027-02-05 3000 2000.01 9000 6000.01),$(stub_json feb19.pdf 2 2027-02-19 3100 2050 12100 8050.01 "\"lines\":[{\"category\":\"401k_loan\",\"amount\":100,\"debt\":\"$LOAN3\"}]"),$(stub_json mar19.pdf 3 2027-03-19 3100 2050 15200 10100.01)]"
+OUT=$(bulk "$E8" "$GOOD" -F "files=@/tmp/smoke-s1.pdf;type=application/pdf" -F "files=@/tmp/smoke-s2.pdf;type=application/pdf" -F "files=@/tmp/smoke-s3.pdf;type=application/pdf" -F "files=@/tmp/smoke-s4.pdf;type=application/pdf")
+check "a stub for a copied paystub only saves its PDF" "$(echo "$OUT" | python3 -c 'import sys,json; print([r["action"] for r in json.load(sys.stdin)["results"]])')" "['attached', 'attached', 'added', 'attached']"
+check "the copy keeps its amounts and gets the PDF" "$(copy_of "$B3" '["source"]') $(copy_of "$B3" '["net"]') $(copy_of "$B3" '["file"]' | grep -c pdf)" "repeat 2000.01 1"
+check "a new stub is linked to its deposit" "$(status_of "$B4")" "matched"
+check "and backfills the later deposit before its own stub is attached" "$(copy_of "$B5" '["source"]')" "repeat"
+check "the year-to-date figures were checked" "$(echo "$OUT" | python3 -c 'import sys,json; print([(r["ytd"]["gross"]["checked"], r["ytd"]["gross"]["ok"]) for r in json.load(sys.stdin)["results"]])')" "[(True, True), (True, True), (True, True), (True, True)]"
+check "the new stub's loan line and its copy pay the loan" "$(balance_of "$LOAN3")" "800"
+check "uploading the same zip again changes nothing" "$(bulk "$E8" "$GOOD" -F "files=@/tmp/smoke-s1.pdf;type=application/pdf" -F "files=@/tmp/smoke-s2.pdf;type=application/pdf" -F "files=@/tmp/smoke-s3.pdf;type=application/pdf" -F "files=@/tmp/smoke-s4.pdf;type=application/pdf" | python3 -c 'import sys,json; print({r["action"] for r in json.load(sys.stdin)["results"]})')" "{'already'}"
+check "a stub that doesn't match its copied paystub fails the upload" "$(bulk "$E8" "[$(stub_json odd.pdf 0 2027-01-22 3000 1990 6000 3990)]" -F "files=@/tmp/smoke-s5.pdf;type=application/pdf" | field '["status"]')" "400"
+KIM_STUB=$(bulk "$E8" "[$(stub_json kim.pdf 0 2027-05-07 2000 1500 0 0 "\"earner\":\"$E5\"")]" -F "files=@/tmp/smoke-s5.pdf;type=application/pdf" | field '["results"][0]["paystub"]')
+check "a stub can name its own earner" "$(j -H "$A" "$B/api/collections/paystubs/records/$KIM_STUB" | field '["earner"]')" "$E5"
+OE8=$(j -H "$OTHER" -X POST "$B/api/collections/earners/records" -d '{"name":"Not mine"}' | field '["id"]')
+check "a stub can't name another household's earner" "$(bulk "$E8" "[$(stub_json x.pdf 0 2027-05-21 1 1 0 0 "\"earner\":\"$OE8\"")]" -F "files=@/tmp/smoke-s5.pdf;type=application/pdf" | field '["status"]')" "400"
+printf '<html><script>alert(1)</script></html>' > /tmp/smoke-fake.pdf
+check "a file that isn't really a PDF is refused" "$(bulk "$E8" "[$(stub_json fake.pdf 0 2027-06-04 1 1 0 0)]" -F "files=@/tmp/smoke-fake.pdf;type=application/pdf" | field '["status"]')" "400"
+check "another household can't bulk upload for my earner" "$(curl -s -H "$OTHER" -X POST "$B/api/paystubs/bulk" --form-string "earner=$E8" --form-string "stubs=[$(stub_json x.pdf 0 2027-04-02 1 1 0 0)]" -F "files=@/tmp/smoke-s5.pdf;type=application/pdf" | field '["status"]')" "400"
+
 # Annual envelopes, imported months and opening balances
 carried_of() { j -H "$A" "$B/api/finance/balances?month=$1" | field "[\"carried\"][\"$2\"]"; }
 XMAS=$(j -H "$A" -X POST "$B/api/sync/envelopes" -d '{"records":[{"external_id":"imp-xmas","name":"Christmas","period":"annual","goal":3600,"rollover":true,"opening_balance":500,"opening_date":"2026-11-10 23:59:59.999Z"}]}' | field '["records"][0]["id"]')
