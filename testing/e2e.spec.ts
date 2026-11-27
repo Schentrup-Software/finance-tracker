@@ -33,11 +33,16 @@ test("first visit creates the account, then sign-up closes", async ({ page, requ
 
   // A new household is offered SimpleFIN first, and can skip it.
   await expect(page).toHaveURL(/\/accounts\?welcome=1/);
-  await expect(page.getByRole("heading", { name: "Welcome! Connect your banks first?" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Welcome! Step 1: connect your banks" })).toBeVisible();
   await expect(page.getByLabel("Setup token")).toBeVisible();
   await shot(page, "02-connect-banks");
+  // Until it's connected or skipped, the app keeps coming back to it.
+  await page.goto("/budget");
+  await expect(page).toHaveURL(/\/accounts\?welcome=1/);
   await page.getByRole("button", { name: "Skip, I'll enter accounts by hand" }).click();
   await expect(page).toHaveURL(/\/budget/);
+  await page.reload();
+  await expect(page).toHaveURL(/\/budget/); // skipped is remembered
 
   const res = await request.get("http://localhost:8090/api/finance/setup");
   expect((await res.json()).signupOpen).toBe(false);

@@ -384,10 +384,17 @@ cronAdd("simplefin_pull", require(`${__hooks}/finance/lib.js`).simplefinMinute($
   require(`${__hooks}/finance/lib.js`).runDueSimplefin($app);
 });
 
-// GET /api/simplefin -> { minute }: the minute past the hour this instance pulls at.
+// GET /api/simplefin -> { minute, connected, skipped }: the minute past the hour this instance
+// pulls at, whether the household has a connection, and when someone chose to skip SimpleFIN.
 routerAdd("GET", "/api/simplefin", (e) => {
   const lib = require(`${__hooks}/finance/lib.js`);
-  return e.json(200, { minute: lib.simplefinMinute(e.app) });
+  return e.json(200, lib.simplefinStatus(e.app, lib.householdOf(e.auth)));
+}, $apis.requireAuth("users"));
+
+// POST /api/simplefin/skip: the household enters accounts by hand, so onboarding stops asking.
+routerAdd("POST", "/api/simplefin/skip", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  return e.json(200, lib.skipSimplefin(e.app, lib.householdOf(e.auth)));
 }, $apis.requireAuth("users"));
 
 // POST /api/simplefin/connect  { "setup_token", "sync_hour_utc" } -> { id, pulled, error }

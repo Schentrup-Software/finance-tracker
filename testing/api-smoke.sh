@@ -339,10 +339,14 @@ if ! curl -sf "$SF/token" > /dev/null 2>&1; then
   for i in $(seq 1 20); do curl -sf "$SF/token" > /dev/null 2>&1 && break; sleep 0.2; done
 fi
 SFTOKEN=$(curl -s "$SF/token")
+check "a new household hasn't connected or skipped SimpleFIN" "$(j -H "$OTHER" "$B/api/simplefin" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["connected"], d["skipped"] == "")')" "False True"
+check "a member can't mark SimpleFIN skipped by hand" "$(j -H "$OTHER" -X PATCH "$B/api/collections/users/records/$(j -H "$OTHER" "$B/api/collections/users/records" | field '["items"][0]["id"]')" -d '{"simplefin_skipped":"2026-01-01 00:00:00.000Z"}' | field '["status"]')" "404"
+check "skipping SimpleFIN is remembered for the household" "$(j -H "$OTHER" -X POST "$B/api/simplefin/skip" > /dev/null; j -H "$OTHER" "$B/api/simplefin" | python3 -c 'import sys,json; print(json.load(sys.stdin)["skipped"] != "")')" "True"
 check "a setup token that isn't one is refused" "$(j -H "$A" -X POST "$B/api/simplefin/connect" -d '{"setup_token":"hello"}' | field '["status"]')" "400"
 CONN=$(j -H "$A" -X POST "$B/api/simplefin/connect" -d "{\"setup_token\":\"$SFTOKEN\",\"sync_hour_utc\":11}" | field '["id"]')
 check "a used setup token is refused" "$(j -H "$A" -X POST "$B/api/simplefin/connect" -d "{\"setup_token\":\"$SFTOKEN\"}" | field '["status"]')" "400"
 check "connecting lists the bank's accounts" "$(j -H "$A" "$B/api/collections/simplefin_accounts/records?sort=name" | python3 -c 'import sys,json; print([a["name"] for a in json.load(sys.stdin)["items"]])')" "['Everyday Checking', 'High Yield Savings', 'Home Mortgage', 'Sunshine Visa']"
+check "connecting counts as done with the SimpleFIN step" "$(j -H "$A" "$B/api/simplefin" | field '["connected"]')" "True"
 check "the connection is named for its bank" "$(j -H "$A" "$B/api/collections/simplefin_connections/records/$CONN" | field '["label"]')" "Sunshine Bank"
 check "the access URL never leaves the server" "$(j -H "$A" "$B/api/collections/simplefin_connections/records/$CONN" | python3 -c 'import sys,json; print("access_url" in json.load(sys.stdin))')" "False"
 # The access URL (with the Bridge login in it) is readable by nobody but the server: not the
