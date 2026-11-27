@@ -62,7 +62,7 @@ export default function HouseholdPage() {
                   style={{ background: "var(--c)" }} aria-hidden="true">
                   {(m.name || m.email).slice(0, 1).toUpperCase()}
                 </span>
-                <div className="min-w-0 flex-1">
+                <div className="min-w-[10rem] flex-1">
                   <div className="truncate text-lg font-black">
                     {m.name || m.email.split("@")[0]}
                     {m.isMe && <span className="ml-2 text-sm font-bold opacity-60">(you)</span>}

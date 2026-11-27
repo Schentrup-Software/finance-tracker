@@ -120,6 +120,11 @@
   }
   .input:focus { box-shadow: inset 0 0 0 3px var(--lilac-deep); }
   .input::placeholder { color: rgba(var(--ink-rgb), .45); }
+  /* On a phone a date field in a two-column row is too narrow for the date and the picker icon. */
+  @media (max-width: 639px) {
+    .input[type="date"] { @apply min-w-0 px-3 text-[15px]; }
+    .input[type="date"]::-webkit-calendar-picker-indicator { margin-left: 2px; }
+  }
 
   .pill {
     @apply inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-extrabold;

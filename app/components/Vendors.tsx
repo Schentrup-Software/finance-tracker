@@ -460,7 +460,7 @@ export function VendorForm({ open, vendor, vendors, envelopes, onClose, onSaved 
           onChange={(e) => setMatches(e.target.value)} placeholder="PAYPAL *STMARYSCHURCH" />
         <Select label="Usual envelope" value={envelope} onChange={(e) => setEnvelope(e.target.value)}
           options={[{ value: "", label: "None" }, ...envelopes.filter((e) => !e.archived || e.id === envelope).map((e) => ({ value: e.id, label: `${e.emoji ? e.emoji + " " : ""}${e.name}` }))]} />
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-3 items-end gap-3">
           <Select label="Recurring" value={recurring} onChange={(e) => setRecurring(e.target.value as Cadence)}
             options={[{ value: "", label: "No" }, ...CADENCES.map((c) => ({ value: c, label: CADENCE_LABELS[c] }))]} />
           {recurring && <MoneyInput label="Usual amount" value={expected} onChange={(e) => setExpected(e.target.value)} />}

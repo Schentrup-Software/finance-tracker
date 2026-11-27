@@ -90,7 +90,7 @@ export function Meter({ value, color, label }: { value: number; color?: Color; l
 
 export function SectionTitle({ children, action }: { children: ReactNode; action?: ReactNode }) {
   return (
-    <div className="mb-4 mt-10 flex items-center justify-between gap-3">
+    <div className="mb-4 mt-10 flex flex-wrap items-center justify-between gap-x-3 gap-y-3">
       <h2 className="text-2xl font-black">{children}</h2>
       {action}
     </div>
@@ -145,7 +145,7 @@ export function Modal({ open, title, onClose, children, color = "white", wide = 
     <div className="fixed inset-0 z-50 flex items-end justify-center p-3 sm:items-center sm:p-6"
       role="dialog" aria-modal="true" aria-label={title}>
       <div className="absolute inset-0 bg-[rgba(106,93,123,.35)] backdrop-blur-[2px]" onClick={onClose} />
-      <div ref={ref} className={cx("chunk pop-in relative max-h-[92vh] w-full overflow-y-auto p-6", wide ? "max-w-3xl" : "max-w-lg", `c-${color}`)}>
+      <div ref={ref} className={cx("chunk pop-in relative max-h-[92vh] w-full overflow-y-auto p-5 sm:p-6", wide ? "max-w-3xl" : "max-w-lg", `c-${color}`)}>
         <div className="mb-5 flex items-center justify-between gap-3">
           <h2 className="text-2xl font-black">{title}</h2>
           <RoundButton label="Close" icon="close" onClick={onClose} />

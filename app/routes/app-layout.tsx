@@ -30,12 +30,13 @@ export default function AppLayout() {
 
   return (
     <div className="min-h-screen pb-16">
-      <header className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-4 pt-5 sm:px-6">
-        <div className="flex items-center gap-3">
-          <PiggyLogo className="h-12 w-12 sm:h-14 sm:w-14" />
-          <h1 className="text-2xl font-black tracking-tight sm:text-4xl">Finance Tracker</h1>
+      <header className="mx-auto flex w-full max-w-6xl items-center justify-between gap-2 px-4 pt-5 sm:gap-4 sm:px-6">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+          <PiggyLogo className="h-9 w-9 flex-none sm:h-14 sm:w-14" />
+          <h1 className="text-lg font-black leading-tight tracking-tight sm:text-4xl">Finance Tracker</h1>
         </div>
-        <div className="flex items-center gap-3">
+        {/* Phones fit the four round buttons by making them a little smaller (still 44px, a full tap target). */}
+        <div className="flex flex-none items-center gap-1.5 sm:gap-3 [&>.round-btn]:h-11 [&>.round-btn]:w-11 sm:[&>.round-btn]:h-12 sm:[&>.round-btn]:w-12">
           <span className="hidden text-sm font-bold opacity-70 md:inline">{currentUserEmail()}</span>
           <RoundButton label="Bank accounts" icon="bank" onClick={() => navigate("/accounts")} />
           <RoundButton label="Household" icon="people" onClick={() => navigate("/household")} />
@@ -44,12 +45,12 @@ export default function AppLayout() {
         </div>
       </header>
 
-      <nav aria-label="Sections" className="sticky top-0 z-30 mx-auto mt-4 w-full max-w-6xl px-4 py-3 sm:px-6">
+      <nav aria-label="Sections" className="sticky top-0 z-30 mx-auto mt-2 w-full max-w-6xl px-4 py-3 sm:mt-4 sm:px-6">
         <div className="tray grid grid-cols-3 gap-2 p-2 backdrop-blur sm:gap-3 sm:p-3">
           {TABS.map((t) => (
             <NavLink key={t.to} to={t.to}
               className={({ isActive }) => cx(
-                "flex items-center justify-center gap-2 rounded-[22px] px-3 py-3 text-lg font-black transition-all sm:text-xl",
+                "flex min-w-0 items-center justify-center gap-1.5 rounded-[22px] px-2 py-3 text-base font-black transition-all sm:gap-2 sm:px-3 sm:text-xl",
                 `c-${t.color}`,
                 isActive ? "chunk translate-y-0" : "opacity-70 hover:bg-white/70 hover:opacity-100",
               )}

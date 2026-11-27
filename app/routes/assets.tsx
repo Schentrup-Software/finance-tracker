@@ -59,7 +59,7 @@ export default function AssetsPage() {
         <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
           <Stat label="Net worth" value={<span className="text-5xl sm:text-6xl">{money(totals.netWorth)}</span>}
             hint="Everything you own, minus everything you owe." />
-          <div className="grid grid-cols-2 gap-4 sm:text-right">
+          <div className="grid grid-cols-1 gap-4 min-[420px]:grid-cols-2 sm:text-right">
             <Stat label="Assets" value={<span className="text-2xl">{money(totals.totalAssets)}</span>} />
             <Stat label="Debts" value={<span className="text-2xl">−{money(totals.totalDebts)}</span>}
               hint={<Link to="/debts" className="underline underline-offset-2">See debts</Link>} />

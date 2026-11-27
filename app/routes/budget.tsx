@@ -142,7 +142,26 @@ export default function BudgetPage() {
         </div>
       )}
 
-      <div className="mt-5 flex justify-center">
+      {/* Phones get a dropdown: the four tabs don't fit side by side. */}
+      <div className="mt-4 sm:hidden">
+        <label htmlFor="budget-view" className="sr-only">Budget view</label>
+        <div className="relative mx-auto max-w-xs">
+          <select id="budget-view" value={view} onChange={(e) => go(month, e.target.value as View)}
+            className="input appearance-none py-3 pl-5 pr-12 text-lg font-black">
+            {VIEWS.map((v) => (
+              <option key={v.key} value={v.key}>
+                {v.emoji} {v.label}{v.key === "income" && waiting > 0 ? " · paystub needed" : ""}
+              </option>
+            ))}
+          </select>
+          <Icon name="down" className="pointer-events-none absolute right-4 top-1/2 h-5 w-5 -translate-y-1/2" />
+          {view !== "income" && waiting > 0 && (
+            <span className="absolute -right-1 -top-1 h-3.5 w-3.5 rounded-full bg-[var(--coral-deep)] ring-2 ring-white" title="A paycheck needs its paystub" />
+          )}
+        </div>
+      </div>
+
+      <div className="mt-5 hidden justify-center sm:flex">
         <div className="inline-flex rounded-full bg-[rgba(106,93,123,.08)] p-1 font-black" role="tablist" aria-label="Budget views">
           {VIEWS.map((v) => (
             <button key={v.key} type="button" role="tab" aria-selected={view === v.key} onClick={() => go(month, v.key)}
@@ -188,9 +207,11 @@ export default function BudgetPage() {
           )}
 
           <SectionTitle action={
-            <div className="flex flex-wrap justify-end gap-2">
+            <div className="flex flex-wrap gap-x-2 gap-y-3 sm:justify-end">
+              {/* Reordering is a desktop job: dragging fights with scrolling on a phone. */}
               {sorted.length > 1 && (
-                <Button small color={reordering ? "sky" : "white"} aria-pressed={reordering} onClick={() => setReordering(!reordering)}>
+                <Button small color={reordering ? "sky" : "white"} aria-pressed={reordering} onClick={() => setReordering(!reordering)}
+                  className="!hidden sm:!inline-flex">
                   <Icon name={reordering ? "check" : "grip"} className="h-5 w-5" /> {reordering ? "Done" : "Reorder"}
                 </Button>
               )}
@@ -750,7 +771,7 @@ function EnvelopeForm({ open, envelope, budgetId, count, onClose, onSaved }: {
         </div>
         <Select label="Kind of envelope" value={period} onChange={(e) => setPeriod(e.target.value as "monthly" | "annual")}
           options={[{ value: "monthly", label: "Monthly: spent month by month" }, { value: "annual", label: "Annual: saves toward a yearly goal" }]} />
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 items-end gap-3">
           <Select label="Category" value={group} onChange={(e) => setGroup(e.target.value as EnvelopeGroup)}
             options={[{ value: "", label: "None" }, ...ENVELOPE_GROUPS.map((g) => ({ value: g, label: GROUP_LABELS[g] }))]} />
           <MoneyInput label="Usual monthly amount" value={amount} onChange={(e) => setAmount(e.target.value)} />
