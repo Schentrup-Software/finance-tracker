@@ -10,6 +10,7 @@ import {
   type TaxDocument, type Transaction, type TransactionKind, type Vendor,
 } from "~/backend/types";
 import { EnvelopeArt } from "~/components/EnvelopeArt";
+import { FinishSetup } from "~/components/FinishSetup";
 import { ImportHistory } from "~/components/ImportHistory";
 import { Paychecks } from "~/components/Paychecks";
 import { TaxesView } from "~/components/Taxes";
@@ -84,6 +85,8 @@ export default function BudgetPage() {
   const [adding, setAdding] = useState<TransactionKind | null>(null);
   const [editIncome, setEditIncome] = useState(false);
   const [importing, setImporting] = useState(false);
+  // Bumped after an import, so the onboarding step re-checks whether setup is done.
+  const [setupVersion, setSetupVersion] = useState(0);
   const [details, setDetails] = useState<Transaction | null>(null);
 
   const sorted = useMemo(() => {
@@ -148,6 +151,7 @@ export default function BudgetPage() {
         <TaxesView key={month.slice(0, 4)} initialYear={Number(month.slice(0, 4))} />
       ) : (
       <>
+      <FinishSetup version={setupVersion} onImport={() => setImporting(true)} onFinished={reload} />
       <div className="mt-6"><ErrorNote message={error} /></div>
 
       {!data ? (
@@ -234,7 +238,8 @@ export default function BudgetPage() {
           onClose={() => setAdding(null)} onSaved={reload} />
       )}
 
-      <ImportHistory open={importing} onClose={() => setImporting(false)} onDone={reload} />
+      <ImportHistory open={importing} onClose={() => setImporting(false)}
+        onDone={() => { reload(); setSetupVersion((v) => v + 1); }} />
 
       {data?.budget && (
         <IncomeForm open={editIncome} budgetId={data.budget.id} value={data.budget.planned_income}

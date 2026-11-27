@@ -404,8 +404,10 @@ cronAdd("simplefin_pull", require(`${__hooks}/finance/lib.js`).simplefinMinute($
   require(`${__hooks}/finance/lib.js`).runDueSimplefin($app);
 });
 
-// GET /api/simplefin -> { minute, connected, skipped }: the minute past the hour this instance
-// pulls at, whether the household has a connection, and when someone chose to skip SimpleFIN.
+// GET /api/simplefin -> { minute, connected, skipped, holding, imported }: the minute past the hour
+// this instance pulls at, whether the household has a connection, when someone chose to skip
+// SimpleFIN, whether a connection still holds its transactions for the end of onboarding, and
+// whether any history was imported.
 routerAdd("GET", "/api/simplefin", (e) => {
   const lib = require(`${__hooks}/finance/lib.js`);
   return e.json(200, lib.simplefinStatus(e.app, lib.householdOf(e.auth)));
@@ -417,11 +419,18 @@ routerAdd("POST", "/api/simplefin/skip", (e) => {
   return e.json(200, lib.skipSimplefin(e.app, lib.householdOf(e.auth)));
 }, $apis.requireAuth("users"));
 
-// POST /api/simplefin/connect  { "setup_token", "sync_hour_utc" } -> { id, pulled, error }
+// POST /api/simplefin/connect  { "setup_token", "sync_hour_utc", "hold"? } -> { id, pulled, error }
 routerAdd("POST", "/api/simplefin/connect", (e) => {
   const lib = require(`${__hooks}/finance/lib.js`);
   const body = e.requestInfo().body || {};
-  return e.json(200, lib.connectSimplefin(e.app, lib.householdOf(e.auth), body.setup_token, body.sync_hour_utc));
+  return e.json(200, lib.connectSimplefin(e.app, lib.householdOf(e.auth), body.setup_token, body.sync_hour_utc, body.hold === true));
+}, $apis.requireAuth("users"));
+
+// POST /api/simplefin/finish  { "from"?: "YYYY-MM-DD" } -> { transactions, payments, errors }
+// The end of onboarding: connections held since step 1 start bringing in transactions now.
+routerAdd("POST", "/api/simplefin/finish", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  return e.json(200, lib.finishSimplefinSetup(e.app, lib.householdOf(e.auth), (e.requestInfo().body || {}).from));
 }, $apis.requireAuth("users"));
 
 // POST /api/simplefin/{id}/sync -> { accounts, transactions, payments, warnings }

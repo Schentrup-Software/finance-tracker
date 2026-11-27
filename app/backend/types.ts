@@ -271,6 +271,8 @@ export interface SimplefinConnection {
   last_attempt: string;
   /** What went wrong on the last pull, or the Bridge's warnings. */
   last_error: string;
+  /** Made during onboarding: pulls refresh balances only until setup is finished (after the history import). */
+  hold: boolean;
   created: string;
   updated: string;
 }

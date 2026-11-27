@@ -368,11 +368,18 @@ n8n doesn't need to do anything for this; these endpoints are what the app uses.
 
 | Method | Path | Body | |
 | --- | --- | --- | --- |
-| `GET` | `/api/simplefin` | | `{ "minute", "connected", "skipped" }`: the minute past the hour this server checks for pulls that are due, whether the household has a connection, and when someone chose to skip SimpleFIN (`""` if nobody has) |
+| `GET` | `/api/simplefin` | | `{ "minute", "connected", "skipped", "holding", "imported" }`: the minute past the hour this server checks for pulls that are due, whether the household has a connection, when someone chose to skip SimpleFIN (`""` if nobody has), whether a connection is still held for the end of onboarding, and whether any history was brought in other than by SimpleFIN |
 | `POST` | `/api/simplefin/skip` | | The household will enter accounts by hand: onboarding stops asking. Same answer as `GET` |
-| `POST` | `/api/simplefin/connect` | `{ "setup_token", "sync_hour_utc" }` | Claims the setup token (each works once), saves the connection and pulls its account list. `→ { "id", "pulled", "error" }`; `error` is set if that first pull failed |
+| `POST` | `/api/simplefin/finish` | `{ "from"? }` | The end of onboarding: held connections start bringing in transactions, with a first pull now. `from` (`YYYY-MM-DD`) moves spending accounts that would start later back to that day, only when no history was imported. `→ { "transactions", "payments", "errors" }` |
+| `POST` | `/api/simplefin/connect` | `{ "setup_token", "sync_hour_utc", "hold"? }` | Claims the setup token (each works once), saves the connection and pulls its account list. `→ { "id", "pulled", "error" }`; `error` is set if that first pull failed |
 | `POST` | `/api/simplefin/{id}/sync` | | Pulls now. `→ { "accounts", "transactions", "payments", "warnings" }` |
 | `DELETE` | `/api/simplefin/{id}` | | Forgets the connection and its account list. Transactions, payments, assets and debts it made stay |
+
+Onboarding: step 1 connects SimpleFIN with `hold: true` and saves what each account is for, with
+transactions starting today. A held connection's pulls refresh balances only. Step 2 is the history
+import: when it finishes it calls `/api/simplefin/finish`, so SimpleFIN picks up the day after the
+spreadsheet ends and nothing comes in twice. Skipping the import finishes setup too, and offers to
+start from the 1st of the month instead of today.
 
 How a pull works:
 
@@ -705,6 +712,7 @@ Read-only through the collection API; made, pulled and removed with `/api/simple
 | `last_sync` | date | Last pull that worked |
 | `last_attempt` | date | Last pull tried |
 | `last_error` | text | What went wrong last time, or the Bridge's warnings |
+| `hold` | bool | Made during onboarding: balances only until setup is finished |
 
 The access URL (with its login) is stored in a hidden field and never sent to the browser or the API.
 
