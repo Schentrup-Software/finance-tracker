@@ -221,6 +221,10 @@ check "the year-to-date figures were checked" "$(echo "$OUT" | python3 -c 'impor
 check "the new stub's loan line and its copy pay the loan" "$(balance_of "$LOAN3")" "800"
 check "uploading the same zip again changes nothing" "$(bulk "$E8" "$GOOD" -F "files=@/tmp/smoke-s1.pdf;type=application/pdf" -F "files=@/tmp/smoke-s2.pdf;type=application/pdf" -F "files=@/tmp/smoke-s3.pdf;type=application/pdf" -F "files=@/tmp/smoke-s4.pdf;type=application/pdf" | python3 -c 'import sys,json; print({r["action"] for r in json.load(sys.stdin)["results"]})')" "{'already'}"
 check "a stub that doesn't match its copied paystub fails the upload" "$(bulk "$E8" "[$(stub_json odd.pdf 0 2027-01-22 3000 1990 6000 3990)]" -F "files=@/tmp/smoke-s5.pdf;type=application/pdf" | field '["status"]')" "400"
+KIM_STUB=$(bulk "$E8" "[$(stub_json kim.pdf 0 2027-05-07 2000 1500 0 0 "\"earner\":\"$E5\"")]" -F "files=@/tmp/smoke-s5.pdf;type=application/pdf" | field '["results"][0]["paystub"]')
+check "a stub can name its own earner" "$(j -H "$A" "$B/api/collections/paystubs/records/$KIM_STUB" | field '["earner"]')" "$E5"
+OE8=$(j -H "$OTHER" -X POST "$B/api/collections/earners/records" -d '{"name":"Not mine"}' | field '["id"]')
+check "a stub can't name another household's earner" "$(bulk "$E8" "[$(stub_json x.pdf 0 2027-05-21 1 1 0 0 "\"earner\":\"$OE8\"")]" -F "files=@/tmp/smoke-s5.pdf;type=application/pdf" | field '["status"]')" "400"
 check "another household can't bulk upload for my earner" "$(curl -s -H "$OTHER" -X POST "$B/api/paystubs/bulk" --form-string "earner=$E8" --form-string "stubs=[$(stub_json x.pdf 0 2027-04-02 1 1 0 0)]" -F "files=@/tmp/smoke-s5.pdf;type=application/pdf" | field '["status"]')" "400"
 
 # Annual envelopes, imported months and opening balances

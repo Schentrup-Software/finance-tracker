@@ -81,7 +81,7 @@ export function Paychecks({ month, onAddIncome }: { month: string; onAddIncome?:
           )}
           {activeEarners.length > 0 && (
             <Button small color="white" onClick={() => setBulk(true)}>
-              <Icon name="plus" className="h-5 w-5" /> Zip of paystubs
+              <Icon name="plus" className="h-5 w-5" /> Many paystubs
             </Button>
           )}
           <Button small color="white" onClick={() => setEditingEarner("new")}><Icon name="plus" className="h-5 w-5" /> Earner</Button>

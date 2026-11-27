@@ -684,10 +684,22 @@ function ytdCheck(app, ownerId, earner, record, field, printed) {
 function bulkUploadPaystubs(app, ownerId, earnerId, rawStubs, files) {
   if (!Array.isArray(rawStubs) || rawStubs.length === 0) throw badRequest("Send at least one paystub in `stubs`.");
   if (rawStubs.length > 200) throw badRequest("Send at most 200 paystubs at a time.");
-  let earner;
-  try { earner = app.findRecordById("earners", earnerId); } catch (_) { earner = null; }
-  if (!earner || earner.get("owner") !== ownerId) throw badRequest("Pick whose paystubs these are.");
-  const stubs = rawStubs.map((r, i) => cleanStub(app, ownerId, r, i, files.length));
+  // Each stub can name its own earner (read from the name on it); `earnerId` is for the rest.
+  const earners = {};
+  const earnerOf = (id) => {
+    if (!earners[id]) {
+      let rec;
+      try { rec = app.findRecordById("earners", id); } catch (_) { rec = null; }
+      if (!rec || rec.get("owner") !== ownerId) throw badRequest("Pick whose paystubs these are.");
+      earners[id] = rec;
+    }
+    return earners[id];
+  };
+  const stubs = rawStubs.map((r, i) => {
+    const stub = cleanStub(app, ownerId, r, i, files.length);
+    stub.earner = earnerOf(String((r && r.earner) || earnerId || "")).id;
+    return stub;
+  });
   const order = stubs.slice().sort((a, b) => (a.pay_date < b.pay_date ? -1 : a.pay_date > b.pay_date ? 1 : a.index - b.index));
   const results = [];
 
@@ -696,13 +708,15 @@ function bulkUploadPaystubs(app, ownerId, earnerId, rawStubs, files) {
     const lineCollection = txApp.findCollectionByNameOrId("paystub_lines");
     for (const stub of order) {
       const result = { index: stub.index, name: stub.name, pay_date: stub.pay_date, action: "added", filled: 0, ytd: {} };
-      const found = existingPaystubFor(txApp, ownerId, earnerId, stub);
+      const earner = earners[stub.earner];
+      result.earner = earner.id;
+      const found = existingPaystubFor(txApp, ownerId, earner.id, stub);
       let record;
       if (found && !found.same) {
         throw badRequest(
           "The paystub " + stub.name + " doesn't match the paycheck on " + niceDay(found.paystub.getString("pay_date")) + ", which was filled in from an earlier paystub with " +
           dollars(depositOf(found.paystub)) + ", but this paystub's check amount is " + dollars(stub.deposit) +
-          ". Open that paycheck and upload this paystub on its own to fix it. Nothing from this zip was saved.",
+          ". Open that paycheck and upload this paystub on its own to fix it. Nothing from this upload was saved.",
         );
       } else if (found) {
         // Already in the app (often a paystub copied onto a matching deposit): keep its
@@ -717,7 +731,7 @@ function bulkUploadPaystubs(app, ownerId, earnerId, rawStubs, files) {
       } else {
         record = new Record(collection);
         record.set("owner", ownerId);
-        record.set("earner", earnerId);
+        record.set("earner", earner.id);
         record.set("pay_date", pbDay(stub.pay_date));
         if (stub.period_start) record.set("period_start", pbDay(stub.period_start));
         if (stub.period_end) record.set("period_end", pbDay(stub.period_end));
@@ -755,7 +769,7 @@ function bulkUploadPaystubs(app, ownerId, earnerId, rawStubs, files) {
           throw badRequest(
             "The paystub " + stub.name + " (paid " + niceDay(stub.pay_date) + ") shows " + dollars(check.printed) + " " + field +
             " pay so far this year, but the paystubs in the app add up to " + dollars(check.expected) + " (" +
-            dollars(Math.abs(check.off)) + (check.off > 0 ? " short" : " over") + "). Nothing from this zip was saved.",
+            dollars(Math.abs(check.off)) + (check.off > 0 ? " short" : " over") + "). Nothing from this upload was saved.",
           );
         }
       }
@@ -787,8 +801,9 @@ const PAYSTUB_PROMPT = [
   '{"pay_date":"YYYY-MM-DD","period_start":"YYYY-MM-DD","period_end":"YYYY-MM-DD","employer_name":"","gross":0,"net":0,',
   '"lines":[{"label":"as printed","category":"one of the categories","amount":0}],',
   '"employer":[{"label":"as printed","category":"one of the categories","amount":0}],',
-  '"reimbursements":[{"label":"as printed","amount":0}],"check_amount":0,"ytd_gross":0,"ytd_net":0}',
+  '"reimbursements":[{"label":"as printed","amount":0}],"check_amount":0,"ytd_gross":0,"ytd_net":0,"employee_name":""}',
   "Use this pay period's amounts, not year-to-date. Amounts are positive numbers in dollars.",
+  "employee_name is the employee's name as printed.",
   "ytd_gross and ytd_net are the year-to-date gross and net pay printed on the stub (null if it doesn't show them).",
   "lines are every deduction and tax taken from gross pay. Do not include earnings lines or net pay in lines.",
   "employer is what the employer paid on top of gross pay (employer contributions such as employer-paid medical, dental or vision insurance, a 401(k)",

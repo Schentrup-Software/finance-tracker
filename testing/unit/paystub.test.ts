@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { datesIn, depositAmount, fromAgent, isContributionCategory, linkAccounts, readPaystub, readingLooksGood, segments, totalsByCategory, totalsByGroup, unexplained } from "~/lib/paystub";
+import { datesIn, depositAmount, fromAgent, isContributionCategory, linkAccounts, readPaystub, whoseStub, readingLooksGood, segments, totalsByCategory, totalsByGroup, unexplained } from "~/lib/paystub";
 import { toRows } from "~/lib/pdfText";
 
 // Rows of cells as pdfText produces them, modelled on common payroll layouts.
@@ -274,5 +274,38 @@ describe("linking lines to loans and accounts", () => {
   it("prefers what the last paystub used", () => {
     const linked = linkAccounts([line("hsa", { label: "HSA" })], [line("hsa", { label: "HSA", asset: "other-hsa" })], debts as any, assets as any);
     expect(linked[0].asset).toBe("other-hsa");
+  });
+});
+
+describe("whose paystub", () => {
+  const earners = [{ id: "j", name: "Joey" }, { id: "k", name: "Katie" }];
+
+  it("reads the employee's name and matches the earner by first name", () => {
+    const r = readPaystub([["Employee", "Joey Example"], ["Pay Date:", "11/21/2026"], ["Gross Pay", "3,500.00"]]);
+    expect(r.employee).toBe("Joey Example");
+    expect(whoseStub(r, earners)).toBe("j");
+    expect(readPaystub([["Employee Name: Katie Example"]]).employee).toBe("Katie Example");
+  });
+
+  it("finds an unlabelled name anywhere on the stub", () => {
+    const r = readPaystub([["Acme Widgets Inc"], ["KATIE EXAMPLE"], ["123 Main St"], ["Gross Pay", "3,500.00"]]);
+    expect(r.employee).toBeNull();
+    expect(whoseStub(r, earners)).toBe("k");
+  });
+
+  it("can't tell when no earner's name is on it, or more than one is", () => {
+    expect(whoseStub({ employee: null, text: "Acme Widgets" }, earners)).toBeNull();
+    expect(whoseStub({ employee: null, text: "Joey and Katie" }, earners)).toBeNull();
+    // The labelled employee name settles it.
+    expect(whoseStub({ employee: "Katie Example", text: "Joey and Katie" }, earners)).toBe("k");
+  });
+
+  it("uses a full name when two earners share a first name", () => {
+    const twins = [{ id: "a", name: "Sam Lee" }, { id: "b", name: "Sam Park" }];
+    expect(whoseStub({ employee: "Sam Park", text: "" }, twins)).toBe("b");
+  });
+
+  it("comes through from the OpenClaw agent", () => {
+    expect(fromAgent({ employee_name: " Joey Example " }).employee).toBe("Joey Example");
   });
 });

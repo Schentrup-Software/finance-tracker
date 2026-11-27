@@ -488,6 +488,8 @@ export async function savePaystub(
 /** One paystub from a zip, as read in the browser. `file` is its position in the files sent. */
 export interface BulkStub {
   name: string;
+  /** Whose paystub it is; the request's `earner` when left out. */
+  earner?: string;
   file: number;
   pay_date: string; // YYYY-MM-DD
   period_start: string;
@@ -512,6 +514,7 @@ export interface YtdCheck {
 export interface BulkResult {
   index: number;
   name: string;
+  earner: string;
   pay_date: string;
   /** added: a new paystub; attached: its PDF was saved with the paystub already there; already: that paystub had its PDF. */
   action: "added" | "attached" | "already";

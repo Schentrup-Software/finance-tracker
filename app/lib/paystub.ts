@@ -109,6 +109,10 @@ export interface PaystubReading {
   check: number | null;
   /** Year-to-date gross and net pay, when the stub prints them. */
   ytd: YearToDate | null;
+  /** The employee's name, when the stub labels it ("Employee: Joey Example"). */
+  employee: string | null;
+  /** All the stub's text, to look for an earner's name when it isn't labelled. */
+  text: string;
 }
 
 export interface YearToDate {
@@ -296,6 +300,21 @@ function ytdOf(rows: string[][], segs: ReturnType<typeof segments>, label: RegEx
   return null;
 }
 
+const EMPLOYEE_LABEL = /^(employee(\s*name)?|name|pay\s*to(\s*the\s*order\s*of)?|paid\s*to)\s*:?\s*/i;
+
+/** The name after an "Employee" or "Employee Name" label, on its own or in the next cell. */
+function employeeIn(rows: string[][]): string | null {
+  for (const row of rows) {
+    for (let i = 0; i < row.length; i++) {
+      const m = row[i].match(EMPLOYEE_LABEL);
+      if (!m) continue;
+      const rest = row[i].slice(m[0].length).trim() || (row[i + 1] ?? "").trim();
+      if (/[a-z]{2,}/i.test(rest) && !/\d{2}/.test(rest) && !/^(id|number|#|no\.?)\b/i.test(rest)) return rest.slice(0, 80);
+    }
+  }
+  return null;
+}
+
 /** Reads a paystub's text (rows of cells, as laid out on the page). */
 export function readPaystub(rows: string[][]): PaystubReading {
   const segs = segments(rows);
@@ -372,7 +391,10 @@ export function readPaystub(rows: string[][]): PaystubReading {
     reimbursements.push({ label: "Reimbursements", category: "reimbursement", amount: round2(check - net) });
   }
 
-  return { pay_date, period_start, period_end, gross, net, lines, employer, reimbursements, check, ytd };
+  return {
+    pay_date, period_start, period_end, gross, net, lines, employer, reimbursements, check, ytd,
+    employee: employeeIn(rows), text: rowsText.join("\n"),
+  };
 }
 
 /** What lands in the bank: net pay plus reimbursements. */
@@ -417,6 +439,8 @@ export function fromAgent(json: any): PaystubReading {
   const reading: PaystubReading = {
     pay_date: date(json?.pay_date), period_start: date(json?.period_start), period_end: date(json?.period_end),
     gross: num(json?.gross), net: num(json?.net), check: num(json?.check_amount),
+    employee: typeof json?.employee_name === "string" && json.employee_name.trim() ? json.employee_name.trim().slice(0, 80) : null,
+    text: "",
     ytd: num(json?.ytd_gross) !== null || num(json?.ytd_net) !== null ? { gross: num(json?.ytd_gross), net: num(json?.ytd_net) } : null,
     lines: readLines(json?.lines, () => true),
     // Employer-paid taxes aren't benefits, so they are dropped.
@@ -489,4 +513,31 @@ export function readingLines(r: PaystubReading) {
     ...r.employer.map((l) => ({ ...l, debt: "", asset: "", employer_paid: true })),
     ...r.reimbursements.map((l) => ({ ...l, debt: "", asset: "" })),
   ];
+}
+
+// ---------- Whose paystub ----------
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const hasWord = (haystack: string, word: string) => new RegExp(`(^|[^a-z])${escapeRe(word)}($|[^a-z])`, "i").test(haystack);
+
+/**
+ * Which earner a paystub belongs to, by the name printed on it: the earner whose
+ * name (or first name) is the employee's name, else the only earner whose name is
+ * anywhere on the stub. Null when it can't tell.
+ */
+export function whoseStub(r: Pick<PaystubReading, "employee" | "text">, earners: { id: string; name: string }[]): string | null {
+  const named = earners
+    .map((e) => ({ id: e.id, full: e.name.trim(), first: e.name.trim().split(/\s+/)[0] ?? "" }))
+    .filter((e) => e.first.length >= 2);
+  const pick = (haystack: string) => {
+    const full = named.filter((e) => e.full.includes(" ") && hasWord(haystack, e.full));
+    if (full.length === 1) return full[0].id;
+    const first = named.filter((e) => hasWord(haystack, e.first));
+    return first.length === 1 ? first[0].id : null;
+  };
+  if (r.employee) {
+    const hit = pick(r.employee);
+    if (hit) return hit;
+  }
+  return r.text ? pick(r.text) : null;
 }

@@ -4,6 +4,7 @@ import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PDFDocument } from "pdf-lib";
 import { makeZip } from "../app/lib/zip";
 
 const { paystubHtml } = createRequire(import.meta.url)("./fixtures/make-paystub.cjs");
@@ -211,6 +212,30 @@ test("paychecks: read a PDF paystub, then match the next paycheck to the cent", 
   await expect(page.getByText("From paycheck")).toBeVisible();
 });
 
+/** Sample paystubs as PDFs (see fixtures/make-paystub.cjs). */
+async function paystubPdfs(page: Page, stubs: object[]): Promise<Uint8Array[]> {
+  const pdfPage = await page.context().newPage();
+  const out: Uint8Array[] = [];
+  for (const s of stubs) {
+    await pdfPage.setContent(paystubHtml(s));
+    out.push(new Uint8Array(await pdfPage.pdf({ format: "Letter", pageRanges: "1" })));
+  }
+  await pdfPage.close();
+  return out;
+}
+
+/** One PDF with a sample paystub on each page, saved to a temp file. */
+async function paystubBook(page: Page, name: string, stubs: object[]): Promise<string> {
+  const book = await PDFDocument.create();
+  for (const bytes of await paystubPdfs(page, stubs)) {
+    const one = await PDFDocument.load(bytes);
+    for (const p of await book.copyPages(one, one.getPageIndices())) book.addPage(p);
+  }
+  const path = join(tmpdir(), name);
+  writeFileSync(path, await book.save());
+  return path;
+}
+
 /** A zip of sample paystubs (see fixtures/make-paystub.cjs), saved to a temp file. */
 async function paystubZip(page: Page, name: string, stubs: object[]): Promise<string> {
   const pdfPage = await page.context().newPage();
@@ -238,14 +263,14 @@ test("paychecks: upload a zip of paystubs, checked against year-to-date pay", as
     nov28,
     { begin: "11/29/2026", end: "12/12/2026", payDate: "12/05/2026", net: 2313.1, ytdGross: 85000, ytdNet: 55514.41 },
   ]);
-  await page.getByRole("button", { name: "Zip of paystubs" }).click();
+  await page.getByRole("button", { name: "Many paystubs" }).click();
   let d = page.getByRole("dialog");
-  await d.getByLabel("Zip of paystubs").setInputFiles(drifted);
-  await expect(d.getByText("2 of 2 paystubs read for Joey.")).toBeVisible();
+  await d.getByLabel("Paystubs file").setInputFiles(drifted);
+  await expect(d.getByText("2 of 2 paystubs read.")).toBeVisible();
   await expect(d.getByText("$80,500.00 gross so far this year")).toBeVisible();
   await d.getByRole("button", { name: "Save 2 paystubs" }).click();
   await expect(d.getByRole("alert")).toContainText("shows $85,000.00 gross pay so far this year, but the paystubs in the app add up to $84,000.00");
-  await expect(d.getByRole("alert")).toContainText("Nothing from this zip was saved.");
+  await expect(d.getByRole("alert")).toContainText("Nothing from this upload was saved.");
   await shot(page, "06a-zip-drift");
   await d.getByRole("button", { name: "Close" }).click();
   await expect(page.getByText("$7,000")).toBeVisible(); // nothing added
@@ -254,9 +279,9 @@ test("paychecks: upload a zip of paystubs, checked against year-to-date pay", as
     { begin: "11/29/2026", end: "12/12/2026", payDate: "12/05/2026", net: 2313.1, ytdGross: 84000, ytdNet: 55514.41 },
     nov28,
   ]);
-  await page.getByRole("button", { name: "Zip of paystubs" }).click();
+  await page.getByRole("button", { name: "Many paystubs" }).click();
   d = page.getByRole("dialog");
-  await d.getByLabel("Zip of paystubs").setInputFiles(good);
+  await d.getByLabel("Paystubs file").setInputFiles(good);
   await d.getByRole("button", { name: "Save 2 paystubs" }).click();
   await expect(d.getByRole("status")).toContainText("1 new paystub, 1 PDF saved with paystubs already here.");
   await expect(d.getByText("PDF saved with the paystub copied from an earlier one")).toBeVisible();
@@ -264,6 +289,24 @@ test("paychecks: upload a zip of paystubs, checked against year-to-date pay", as
   await shot(page, "06b-zip-of-paystubs");
   await d.getByRole("button", { name: "Done" }).click();
   await expect(page.getByText("$10,500")).toBeVisible();
+
+  // One PDF with a paystub on each page: Dec 5 is already here, Dec 19 is new.
+  const book = await paystubBook(page, "paystubs.pdf", [
+    { begin: "11/29/2026", end: "12/12/2026", payDate: "12/05/2026", net: 2313.1, ytdGross: 84000, ytdNet: 55514.41 },
+    { begin: "12/13/2026", end: "12/26/2026", payDate: "12/19/2026", net: 2313.1, ytdGross: 87500, ytdNet: 57827.51 },
+  ]);
+  await page.getByRole("button", { name: "Many paystubs" }).click();
+  d = page.getByRole("dialog");
+  await d.getByLabel("Paystubs file").setInputFiles(book);
+  await expect(d.getByText("2 of 2 paystubs read.")).toBeVisible();
+  await expect(d.getByText("paystubs page 2.pdf")).toBeVisible();
+  await d.getByRole("button", { name: "Save 2 paystubs" }).click();
+  await expect(d.getByRole("status")).toContainText("1 new paystub.");
+  await expect(d.getByText("Already had this PDF")).toBeVisible();
+  await expect(d.getByText("✓ Gross so far this year adds up ($87,500.00)")).toBeVisible();
+  await shot(page, "06c-pdf-of-paystubs");
+  await d.getByRole("button", { name: "Done" }).click();
+  await expect(page.getByText("$14,000")).toBeVisible();
 });
 
 test("import history from a spreadsheet, with annual envelopes", async ({ page }) => {

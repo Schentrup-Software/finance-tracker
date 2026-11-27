@@ -235,9 +235,10 @@ Uploading a paystub with its file is a `multipart/form-data` create on `paystubs
 (field `file`); then create its lines on `paystub_lines`. Files are protected: get a file
 token from `POST /api/files/token` and add `?token=...` to the file URL.
 
-### Bulk upload (a zip of paystub PDFs)
+### Bulk upload (a zip of paystub PDFs, or one PDF with a paystub per page)
 
-The app's **Zip of paystubs** button reads every PDF in a zip in the browser, then sends
+The app's **Many paystubs** button takes a zip of paystub PDFs, or one PDF with a paystub
+on each page (split into one PDF per page). It reads each one in the browser, then sends
 them all at once. The server saves all of them or none.
 
 ```http
@@ -245,7 +246,7 @@ POST /api/paystubs/bulk
 Content-Type: multipart/form-data
 
 earner=<earner id>
-stubs=[{ "name": "2026-11-13.pdf", "file": 0, "pay_date": "2026-11-13",
+stubs=[{ "name": "2026-11-13.pdf", "earner": "<earner id>", "file": 0, "pay_date": "2026-11-13",
          "period_start": "2026-10-27", "period_end": "2026-11-09",
          "gross": 4791.67, "net": 2925.35, "deposit": 3188.52,
          "ytd_gross": 105416.74, "ytd_net": 64357.70,
@@ -254,7 +255,9 @@ stubs=[{ "name": "2026-11-13.pdf", "file": 0, "pay_date": "2026-11-13",
 files=<PDF>   (one part per stub; `file` is its position, from 0)
 ```
 
-In pay-date order, each stub:
+A stub's `earner` (optional) is whose paystub it is; the app fills it in from the name
+printed on the stub. Stubs without one go to the request's `earner`. In pay-date order,
+each stub:
 
 - **Already in the app:** the earner has a paystub paid within 4 days of `pay_date` with
   the same check amount (within a cent). That's usually one the server copied onto a
