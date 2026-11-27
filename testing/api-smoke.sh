@@ -345,6 +345,33 @@ check "a used setup token is refused" "$(j -H "$A" -X POST "$B/api/simplefin/con
 check "connecting lists the bank's accounts" "$(j -H "$A" "$B/api/collections/simplefin_accounts/records?sort=name" | python3 -c 'import sys,json; print([a["name"] for a in json.load(sys.stdin)["items"]])')" "['Everyday Checking', 'High Yield Savings', 'Home Mortgage', 'Sunshine Visa']"
 check "the connection is named for its bank" "$(j -H "$A" "$B/api/collections/simplefin_connections/records/$CONN" | field '["label"]')" "Sunshine Bank"
 check "the access URL never leaves the server" "$(j -H "$A" "$B/api/collections/simplefin_connections/records/$CONN" | python3 -c 'import sys,json; print("access_url" in json.load(sys.stdin))')" "False"
+# The access URL (with the Bridge login in it) is readable by nobody but the server: not the
+# member who added it, other members, API tokens, expand, filters, sorting or realtime.
+SECRET="s3cret"
+MEMBER_EMAIL="sfmember-$RUN@smoke.test"
+j -H "$A" -X POST "$B/api/household/members" -d "{\"email\":\"$MEMBER_EMAIL\",\"password\":\"password123\",\"name\":\"Member\"}" > /dev/null
+MEM="Authorization: $(j -X POST "$B/api/collections/users/auth-with-password" -d "{\"identity\":\"$MEMBER_EMAIL\",\"password\":\"password123\"}" | field '["token"]')"
+SFKEY=$(j -H "$A" -X POST "$B/api/tokens" -d '{"name":"sf"}' | field '["token"]')
+leaks() { grep -c "$SECRET\|access_url" || true; }
+check "the member who added it can't read the access URL" "$(j -H "$A" "$B/api/collections/simplefin_connections/records" | leaks)" "0"
+check "another member can see the connection" "$(j -H "$MEM" "$B/api/collections/simplefin_connections/records" | field '["totalItems"]')" "1"
+check "another member can't read the access URL" "$(j -H "$MEM" "$B/api/collections/simplefin_connections/records/$CONN" | leaks)" "0"
+check "an API token can't read the access URL" "$(j -H "Authorization: $SFKEY" "$B/api/collections/simplefin_connections/records/$CONN" | leaks)" "0"
+check "expanding an account's connection doesn't show it" "$(curl -s -G -H "$MEM" "$B/api/collections/simplefin_accounts/records" --data-urlencode "expand=connection" | leaks)" "0"
+check "it can't be probed with a filter" "$(curl -s -G -H "$MEM" "$B/api/collections/simplefin_connections/records" --data-urlencode "filter=access_url~'$SECRET'" | field '["status"]')" "400"
+check "or with a filter through an account" "$(curl -s -G -H "$MEM" "$B/api/collections/simplefin_accounts/records" --data-urlencode "filter=connection.access_url~'$SECRET'" | field '["status"]')" "400"
+check "or by sorting on it" "$(curl -s -G -H "$MEM" "$B/api/collections/simplefin_connections/records" --data-urlencode "sort=access_url" | field '["status"]')" "400"
+RT_LOG=$(mktemp)
+curl -s -N --max-time 5 "$B/api/realtime" > "$RT_LOG" &
+RT_PID=$!
+for i in $(seq 1 20); do grep -q clientId "$RT_LOG" && break; sleep 0.1; done
+RT_CLIENT=$(grep -o '"clientId":"[^"]*"' "$RT_LOG" | cut -d'"' -f4)
+j -H "$MEM" -X POST "$B/api/realtime" -d "{\"clientId\":\"$RT_CLIENT\",\"subscriptions\":[\"simplefin_connections\",\"simplefin_accounts?expand=connection\"]}" > /dev/null
+j -H "$A" -X POST "$B/api/simplefin/$CONN/sync" > /dev/null
+wait $RT_PID || true
+check "realtime sends connection updates" "$(grep -c '"collectionName":"simplefin_connections"' "$RT_LOG" | awk '{print ($1 > 0)}')" "1"
+check "realtime doesn't send the access URL" "$(leaks < "$RT_LOG")" "0"
+rm -f "$RT_LOG"
 check "another household doesn't see the connection" "$(j -H "$OTHER" "$B/api/collections/simplefin_accounts/records" | field '["totalItems"]')" "0"
 check "another household can't pull it" "$(j -H "$OTHER" -X POST "$B/api/simplefin/$CONN/sync" | field '["status"]')" "404"
 check "another household can't disconnect it" "$(j -H "$OTHER" -X DELETE "$B/api/simplefin/$CONN" | field '["status"]')" "404"
