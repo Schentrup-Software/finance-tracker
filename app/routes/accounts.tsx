@@ -36,10 +36,9 @@ interface Choice {
   from: string;
 }
 
-const firstOfMonth = () => `${todayISO().slice(0, 7)}-01`;
 
 function initialChoice(a: SimplefinAccount, assets: Asset[], debts: Debt[]): Choice {
-  const kind = guessKind(a.name, a.balance);
+  const kind = guessKind(a.name, a.balance, a.org);
   const side = kindOption(kind).side;
   const same = (n: string) => n.trim().toLowerCase() === a.name.trim().toLowerCase();
   const byName = side === "asset" ? assets.find((x) => same(x.name)) : debts.find((x) => same(x.name));
@@ -48,7 +47,8 @@ function initialChoice(a: SimplefinAccount, assets: Asset[], debts: Debt[]): Cho
     use: a.use || defaultUse(kind),
     target,
     kind,
-    from: a.sync_from ? a.sync_from.slice(0, 10) : firstOfMonth(),
+    // From today on: older history comes from an import (or the end of setup offers this month).
+    from: a.sync_from ? a.sync_from.slice(0, 10) : todayISO(),
   };
 }
 
@@ -83,6 +83,7 @@ export default function AccountsPage() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [debts, setDebts] = useState<Debt[]>([]);
   const [minute, setMinute] = useState<number | null>(null);
+  const [holding, setHolding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
 
@@ -109,7 +110,7 @@ export default function AccountsPage() {
   }, []);
   useEffect(() => {
     reload();
-    simplefinStatus().then((s) => setMinute(s.minute)).catch(() => setMinute(null));
+    simplefinStatus().then((s) => { setMinute(s.minute); setHolding(s.holding); }).catch(() => setMinute(null));
   }, [reload]);
 
   return (
@@ -150,7 +151,7 @@ export default function AccountsPage() {
       {!connections ? (
         <div className="py-16 text-center text-5xl"><span className="bob inline-block">🏦</span></div>
       ) : connections.length === 0 ? (
-        <ConnectForm onConnected={reload} />
+        <ConnectForm hold={welcome || holding} onConnected={reload} />
       ) : (
         <div className="space-y-6">
           {connections.map((c) => (
@@ -166,13 +167,14 @@ export default function AccountsPage() {
       )}
 
       <Modal open={connecting} title="Connect more accounts" onClose={() => setConnecting(false)} color="aqua">
-        <ConnectForm compact onConnected={() => { setConnecting(false); reload(); }} />
+        <ConnectForm compact hold={welcome || holding} onConnected={() => { setConnecting(false); reload(); }} />
       </Modal>
     </div>
   );
 }
 
-function ConnectForm({ onConnected, compact }: { onConnected: () => void; compact?: boolean }) {
+/** `hold`: made during onboarding, so its transactions wait for the end of setup. */
+function ConnectForm({ onConnected, compact, hold }: { onConnected: () => void; compact?: boolean; hold?: boolean }) {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -182,7 +184,7 @@ function ConnectForm({ onConnected, compact }: { onConnected: () => void; compac
     setBusy(true);
     setError(null);
     try {
-      const res = await connectSimplefin(token.trim(), morningHourUtc(6));
+      const res = await connectSimplefin(token.trim(), morningHourUtc(6), !!hold);
       setToken("");
       if (res.error) setError(`Connected, but the first pull failed: ${res.error}`);
       onConnected();
@@ -252,7 +254,7 @@ function ConnectionCard({ connection, accounts, assets, debts, minute, onChange 
     return `Pulled ${r.accounts} account${r.accounts === 1 ? "" : "s"}: ${parts.join(" and ")}.`;
   }
 
-  async function saveAndPull() {
+  async function save() {
     setBusy("Saving…");
     setError(null);
     setResult(null);
@@ -284,8 +286,13 @@ function ConnectionCard({ connection, accounts, assets, debts, minute, onChange 
           ...(c.use === "spending" ? { sync_from: toPbDate(c.from) } : {}),
         });
       }
-      setBusy("Pulling…");
-      setResult(describe(await pullSimplefin(connection.id)));
+      if (connection.hold) {
+        // Onboarding: transactions wait for the end of setup, so the history import and SimpleFIN don't overlap.
+        setResult("Saved. Transactions start coming in when you finish setup, after importing your history (or skipping that).");
+      } else {
+        setBusy("Pulling…");
+        setResult(describe(await pullSimplefin(connection.id)));
+      }
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -327,9 +334,15 @@ function ConnectionCard({ connection, accounts, assets, debts, minute, onChange 
             Last pulled {when(connection.last_sync)}
             {minute !== null && <> · pulls every morning at {pullTimeLabel(connection.sync_hour_utc, minute)}</>}
           </div>
+          {connection.hold && (
+            <div className="mt-1 text-sm font-bold">
+              <span className="pill c-butter mr-2">Balances only for now</span>
+              Transactions start when you finish setup on the budget page.
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button small color="white" disabled={!!busy} onClick={pullNow}>Pull now</Button>
+          {!connection.hold && <Button small color="white" disabled={!!busy} onClick={pullNow}>Pull now</Button>}
           <button className="btn-ghost text-sm" onClick={disconnect} aria-label={`Disconnect ${connection.label}`}>
             <Icon name="trash" className="h-4 w-4" /> Disconnect
           </button>
@@ -366,8 +379,8 @@ function ConnectionCard({ connection, accounts, assets, debts, minute, onChange 
         {result && <div className="c-mint chunk px-4 py-3 text-sm font-bold" role="status" style={{ borderRadius: 18, boxShadow: "0 4px 0 var(--cd)" }}>{result}</div>}
         {pending.length > 0 && (
           <div className="flex justify-end">
-            <Button color="mint" disabled={!!busy} onClick={saveAndPull}>
-              {busy ?? `Save ${pending.length} account${pending.length === 1 ? "" : "s"} and pull`}
+            <Button color="mint" disabled={!!busy} onClick={save}>
+              {busy ?? `Save ${pending.length} account${pending.length === 1 ? "" : "s"}${connection.hold ? "" : " and pull"}`}
             </Button>
           </div>
         )}

@@ -1543,7 +1543,9 @@ function pullSimplefin(app, conn) {
     const inUse = app.findRecordsByFilter(
       "simplefin_accounts", "connection = {:c} && (use = 'spending' || use = 'balance')", "", 0, 0, { c: conn.id },
     );
-    const spending = inUse.filter((a) => a.getString("use") === "spending" && (a.get("asset") || a.get("debt")));
+    // A connection held for onboarding refreshes balances only, until setup is finished.
+    const spending = conn.getBool("hold") ? [] :
+      inUse.filter((a) => a.getString("use") === "spending" && (a.get("asset") || a.get("debt")));
     const nowSec = Math.floor(now / 1000);
     let query = "version=2";
     if (spending.length > 0) {
@@ -1705,8 +1707,11 @@ function findConnection(app, ownerId, id) {
   return c;
 }
 
-/** Claims a setup token, saves the connection and pulls its accounts. */
-function connectSimplefin(app, ownerId, setupToken, syncHourUtc) {
+/**
+ * Claims a setup token, saves the connection and pulls its accounts (balances only).
+ * `hold`: made during onboarding, so transactions wait until setup is finished.
+ */
+function connectSimplefin(app, ownerId, setupToken, syncHourUtc, hold) {
   const accessUrl = claimSimplefin(setupToken);
   const hour = Number(syncHourUtc);
   const conn = new Record(app.findCollectionByNameOrId("simplefin_connections"));
@@ -1715,6 +1720,7 @@ function connectSimplefin(app, ownerId, setupToken, syncHourUtc) {
   conn.set("label", "SimpleFIN");
   // 6 AM US Eastern unless the app says where the person is.
   conn.set("sync_hour_utc", Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : 11);
+  conn.set("hold", hold === true);
   app.save(conn);
   let pulled = null;
   let error = "";
@@ -1746,11 +1752,54 @@ function disconnectSimplefin(app, ownerId, id) {
 function simplefinStatus(app, ownerId) {
   let skipped = "";
   try { skipped = app.findRecordById("users", ownerId).getString("simplefin_skipped"); } catch (_) {}
+  let imported = false;
+  try {
+    // Anything brought in other than by SimpleFIN: an import of history (or a sync from n8n).
+    app.findFirstRecordByFilter("transactions", "owner = {:o} && external_id != '' && external_id !~ 'sfin-%'", { o: ownerId });
+    imported = true;
+  } catch (_) {}
   return {
     minute: simplefinMinute(app),
     connected: app.countRecords("simplefin_connections", $dbx.hashExp({ owner: ownerId })) > 0,
     skipped: skipped,
+    holding: app.countRecords("simplefin_connections", $dbx.hashExp({ owner: ownerId, hold: true })) > 0,
+    imported: imported,
   };
+}
+
+/**
+ * The end of onboarding: held connections start bringing in transactions, with a first pull now.
+ * `from` ("YYYY-MM-DD", optional) moves spending accounts that would start later back to that day
+ * (the first of the month, when no history was imported). Accounts an import set to start after
+ * its last day are never moved: `from` is ignored once any history was imported. -> { transactions, payments, errors }
+ */
+function finishSimplefinSetup(app, ownerId, from) {
+  // Only without imported history: an import's accounts start the day after its file ends.
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(String(from || "")) && !simplefinStatus(app, ownerId).imported ? String(from) : "";
+  const held = app.findRecordsByFilter("simplefin_connections", "owner = {:o} && hold = true", "created", 0, 0, { o: ownerId });
+  const result = { transactions: 0, payments: 0, errors: [] };
+  for (const conn of held) {
+    if (day) {
+      const accounts = app.findRecordsByFilter("simplefin_accounts", "connection = {:c} && use = 'spending'", "", 0, 0, { c: conn.id });
+      for (const a of accounts) {
+        const current = a.getString("sync_from").slice(0, 10);
+        if (!current || current > day) {
+          a.set("sync_from", pbDay(day));
+          app.save(a);
+        }
+      }
+    }
+    conn.set("hold", false);
+    app.save(conn);
+    try {
+      const r = pullSimplefin(app, conn);
+      result.transactions += r.transactions;
+      result.payments += r.payments;
+    } catch (err) {
+      result.errors.push((conn.getString("label") || "SimpleFIN") + ": " + ((err && err.message) || err));
+    }
+  }
+  return result;
 }
 
 /** Notes that the household chose to enter accounts by hand (on the head's record, without hooks). */
@@ -1777,7 +1826,7 @@ function runDueSimplefin(app) {
 }
 
 module.exports = {
-  simplefinMinute, simplefinStatus, skipSimplefin, connectSimplefin, syncSimplefinNow, disconnectSimplefin, runDueSimplefin,
+  simplefinMinute, simplefinStatus, skipSimplefin, finishSimplefinSetup, connectSimplefin, syncSimplefinNow, disconnectSimplefin, runDueSimplefin,
   applyVendor, backfillVendor, unmatchedStatements, mergeVendors,
   householdOf, requireHead, findMember,
   bearerOf, isApiToken, authWithApiToken, requireSession, listApiTokens, createApiToken, revokeApiToken,

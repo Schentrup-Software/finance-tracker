@@ -424,6 +424,30 @@ check "the mortgage's balance is what the bank says" "$(j -H "$A" "$B/api/collec
 check "checking's value is what the bank says" "$(j -H "$A" "$B/api/collections/assets/records/$CHK" | field '["value"]')" "2450.1"
 check "the next pull starts a few days before the last" "$(curl -s "$SF/requests" | python3 -c 'import sys,json,time; r=[q for q in json.load(sys.stdin) if "start-date" in q][-1]; print(round((time.time()-int(r["start-date"]))/86400) in (5,6))')" "True"
 check "the hourly check's minute is off the top of the hour" "$(j -H "$A" "$B/api/simplefin" | python3 -c 'import sys,json; m=json.load(sys.stdin)["minute"]; print(4 <= m <= 56 and abs(m-30) > 3)')" "True"
+# Onboarding: a connection made in step 1 holds its transactions until setup is finished.
+H="Authorization: $(token_for hold)"
+HCONN=$(j -H "$H" -X POST "$B/api/simplefin/connect" -d "{\"setup_token\":\"$(curl -s "$SF/token")\",\"hold\":true}" | field '["id"]')
+check "a connection made in onboarding holds" "$(j -H "$H" "$B/api/simplefin" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["holding"], d["imported"])')" "True False"
+hacct() { curl -s -G -H "$H" "$B/api/collections/simplefin_accounts/records" --data-urlencode "filter=name='$1'" | field '["items"][0]["id"]'; }
+HCHK=$(j -H "$H" -X POST "$B/api/collections/assets/records" -d '{"name":"Held Checking","type":"checking"}' | field '["id"]')
+TODAY="$(date -u +%Y-%m-%d)"
+j -H "$H" -X PATCH "$B/api/collections/simplefin_accounts/records/$(hacct 'Everyday Checking')" -d "{\"use\":\"spending\",\"asset\":\"$HCHK\",\"sync_from\":\"$TODAY 12:00:00.000Z\"}" > /dev/null
+check "a held connection pulls no transactions" "$(j -H "$H" -X POST "$B/api/simplefin/$HCONN/sync" | field '["transactions"]')" "0"
+check "but it still keeps balances current" "$(j -H "$H" "$B/api/collections/assets/records/$HCHK" | field '["value"]')" "2450.1"
+MONTH_START="$(date -u -d '-10 days' +%Y-%m-%d)"
+check "finishing setup without an import starts from the day chosen" "$(j -H "$H" -X POST "$B/api/simplefin/finish" -d "{\"from\":\"$MONTH_START\"}" | field '["transactions"]')" "3"
+check "and moves the account's start back to it" "$(j -H "$H" "$B/api/collections/simplefin_accounts/records/$(hacct 'Everyday Checking')" | field '["sync_from"]')" "$MONTH_START 12:00:00.000Z"
+check "the connection no longer holds" "$(j -H "$H" "$B/api/collections/simplefin_connections/records/$HCONN" | field '["hold"]')" "False"
+check "finishing again does nothing" "$(j -H "$H" -X POST "$B/api/simplefin/finish" | field '["transactions"]')" "0"
+# With history imported, the start day from the import is kept.
+I="Authorization: $(token_for imp)"
+ICONN=$(j -H "$I" -X POST "$B/api/simplefin/connect" -d "{\"setup_token\":\"$(curl -s "$SF/token")\",\"hold\":true}" | field '["id"]')
+ICHK=$(j -H "$I" -X POST "$B/api/collections/assets/records" -d '{"name":"Imp Checking","type":"checking"}' | field '["id"]')
+j -H "$I" -X POST "$B/api/sync/transactions" -d '{"records":[{"external_id":"import-1","kind":"expense","date":"2026-11-01","amount":5}]}' > /dev/null
+IACCT=$(curl -s -G -H "$I" "$B/api/collections/simplefin_accounts/records" --data-urlencode "filter=name='Everyday Checking'" | field '["items"][0]["id"]')
+j -H "$I" -X PATCH "$B/api/collections/simplefin_accounts/records/$IACCT" -d "{\"use\":\"spending\",\"asset\":\"$ICHK\",\"sync_from\":\"$TODAY 12:00:00.000Z\"}" > /dev/null
+j -H "$I" -X POST "$B/api/simplefin/finish" -d "{\"from\":\"$MONTH_START\"}" > /dev/null
+check "an import's start day isn't moved back" "$(j -H "$I" "$B/api/collections/simplefin_accounts/records/$IACCT" | field '["sync_from"]')" "$TODAY 12:00:00.000Z"
 check "disconnecting" "$(j -H "$A" -X DELETE "$B/api/simplefin/$CONN" | field '["ok"]')" "True"
 check "what it brought in stays" "$(j -H "$A" "$B/api/collections/transactions/records?filter=(account_asset='$CHK')" | field '["totalItems"]')" "2"
 check "its account list goes" "$(j -H "$A" "$B/api/collections/simplefin_accounts/records" | field '["totalItems"]')" "0"

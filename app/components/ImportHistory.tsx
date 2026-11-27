@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import {
-  errorMessage, importBudgets, listAssets, listDebts, listEnvelopes, listSimplefinAccounts, pullSimplefin, syncRecords,
+  errorMessage, finishSimplefinSetup, importBudgets, listAssets, listDebts, listEnvelopes, listSimplefinAccounts, listSimplefinConnections,
+  pullSimplefin, syncRecords,
   toPbDate, updateAsset, updateDebt, updateEnvelope, updateSimplefinAccount,
 } from "~/backend/api";
 import { COLORS, type Asset, type Debt, type Envelope, type SimplefinAccount } from "~/backend/types";
@@ -218,7 +219,10 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
       }
       if (finalBalances.length) await syncRecords("debts", finalBalances);
 
-      // Matched SimpleFIN accounts take over from the day after the file ends.
+      // Matched SimpleFIN accounts take over from the day after the file ends. Connections held
+      // for onboarding (step 1) start bringing in transactions now: the import is the end of setup.
+      const held = new Set((await listSimplefinConnections().catch(() => [])).filter((c) => c.hold).map((c) => c.id));
+      let finished = false;
       const linkedAccounts = accounts.filter((a) => a.kind !== "skip" && a.sfin);
       let pullNote = "";
       if (linkedAccounts.length) {
@@ -239,7 +243,15 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
         }
         setProgress("Pulling new transactions from SimpleFIN…");
         let pulled = 0;
+        if (held.size) {
+          // Onboarding: the import was step 2, so setup is done. SimpleFIN starts after the file's last day.
+          const r = await finishSimplefinSetup();
+          finished = true;
+          pulled += r.transactions;
+          if (r.errors.length) pullNote = ` SimpleFIN couldn't pull just now (${r.errors.join("; ")}); it will try again tomorrow morning.`;
+        }
         for (const c of connections) {
+          if (held.has(c)) continue;
           try {
             pulled += (await pullSimplefin(c)).transactions;
           } catch (err) {
@@ -250,6 +262,14 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
           pullNote = ` ${linkedAccounts.length} account${linkedAccounts.length === 1 ? " is" : "s are"} linked to SimpleFIN` +
             `, with ${pulled} newer transaction${pulled === 1 ? "" : "s"} pulled.`;
         }
+      }
+
+      if (held.size && !finished) {
+        setProgress("Starting SimpleFIN…");
+        const r = await finishSimplefinSetup().catch((err) => ({ transactions: 0, payments: 0, errors: [errorMessage(err)] }));
+        pullNote = r.errors.length
+          ? ` SimpleFIN couldn't pull just now (${r.errors.join("; ")}); it will try again tomorrow morning.`
+          : ` SimpleFIN brought in ${r.transactions} transaction${r.transactions === 1 ? "" : "s"} from today on.`;
       }
 
       setProgress(null);

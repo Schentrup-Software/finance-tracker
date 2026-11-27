@@ -606,3 +606,53 @@ test("SimpleFIN: connect, choose what each account is for, pull, and match an im
     mock.kill();
   }
 });
+
+test("onboarding: SimpleFIN first, its transactions wait for the end of setup", async ({ page, request }) => {
+  const { spawn } = await import("node:child_process");
+  const mock = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/simplefin-mock.cjs", import.meta.url))], { stdio: "ignore" });
+  try {
+    // A second household, made by the server's admin (sign-up is closed by now).
+    const admin = await (await request.post("http://localhost:8090/api/collections/_superusers/auth-with-password", {
+      data: { identity: "admin@local.test", password: "admin12345678" },
+    })).json();
+    const email = `onboard-${Date.now()}@example.test`;
+    await request.post("http://localhost:8090/api/collections/users/records", {
+      headers: { Authorization: admin.token }, data: { email, password: PASSWORD, passwordConfirm: PASSWORD },
+    });
+    let token = "";
+    for (let i = 0; i < 50 && !token; i++) {
+      token = await fetch("http://localhost:8091/token").then((r) => r.text()).catch(() => "");
+      if (!token) await new Promise((r) => setTimeout(r, 100));
+    }
+
+    await page.goto("/login");
+    await page.getByLabel("Email").fill(email);
+    await page.getByLabel("Password").fill(PASSWORD);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page).toHaveURL(/\/accounts\?welcome=1/);
+    await page.getByLabel("Setup token").fill(token);
+    await page.getByRole("button", { name: "Connect" }).click();
+    await expect(page.getByText("Balances only for now")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Pull now" })).toHaveCount(0);
+    // Transactions start today unless setup says otherwise.
+    const today = new Date();
+    const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    await expect(page.getByLabel("Everyday Checking transactions from")).toHaveValue(iso);
+    await page.getByRole("button", { name: "Save 4 accounts", exact: true }).click();
+    await expect(page.getByText(/Saved\. Transactions start coming in when you finish setup/)).toBeVisible();
+    await shot(page, "19-onboarding-saved");
+
+    await page.getByRole("button", { name: "Next: the budget and history import" }).click();
+    await expect(page.getByRole("heading", { name: "Step 2: bring in your history" })).toBeVisible();
+    await shot(page, "20-onboarding-step-2");
+    await page.getByRole("button", { name: "Finish without importing" }).click();
+    const ask = page.getByRole("dialog", { name: "Start from the 1st?" });
+    await expect(ask).toBeVisible();
+    await shot(page, "21-start-from-the-1st");
+    await ask.getByRole("button", { name: /^From / }).last().click();
+    await expect(page.getByText(/Setup is done\. SimpleFIN brought in \d+ transactions?/)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Step 2: bring in your history" })).toHaveCount(0);
+  } finally {
+    mock.kill();
+  }
+});

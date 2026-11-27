@@ -596,6 +596,10 @@ export interface SimplefinStatus {
   connected: boolean;
   /** When someone chose to enter accounts by hand instead ("" if nobody has). */
   skipped: string;
+  /** A connection is waiting for the end of onboarding before it brings in transactions. */
+  holding: boolean;
+  /** Some history was brought in other than by SimpleFIN (an import). */
+  imported: boolean;
 }
 
 export function simplefinStatus(): Promise<SimplefinStatus> {
@@ -625,9 +629,20 @@ export interface SimplefinPull {
 }
 
 /** Claims a setup token and pulls the list of accounts. `error` is set when the first pull failed. */
-export function connectSimplefin(setupToken: string, syncHourUtc: number) {
+export function connectSimplefin(setupToken: string, syncHourUtc: number, hold = false) {
   return pb.send<{ id: string; pulled: SimplefinPull | null; error: string }>("/api/simplefin/connect", {
-    method: "POST", body: { setup_token: setupToken, sync_hour_utc: syncHourUtc },
+    method: "POST", body: { setup_token: setupToken, sync_hour_utc: syncHourUtc, hold },
+  });
+}
+
+/**
+ * The end of onboarding: connections held since step 1 start bringing in transactions, with a
+ * first pull now. `from` (YYYY-MM-DD) starts spending accounts from that day instead, when no
+ * history was imported.
+ */
+export function finishSimplefinSetup(from?: string) {
+  return pb.send<{ transactions: number; payments: number; errors: string[] }>("/api/simplefin/finish", {
+    method: "POST", body: from ? { from } : {},
   });
 }
 
