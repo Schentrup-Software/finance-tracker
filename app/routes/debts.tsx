@@ -148,9 +148,10 @@ function DebtCard({ debt, index, months, fromPaycheck, assets, onEdit, onPay }: 
           style={{ background: "var(--c)", boxShadow: "0 4px 0 var(--cd)" }} aria-hidden="true">
           {done ? "🎉" : DEBT_EMOJI[type]}
         </div>
-        <div className="min-w-0 flex-1">
+        {/* On a phone the balance drops below the name instead of squeezing it. */}
+        <div className="min-w-[12rem] flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="truncate text-xl font-black">{debt.name}</h3>
+            <h3 className="min-w-0 truncate text-xl font-black">{debt.name}</h3>
             {fromPaycheck && <span className="pill c-lilac">From paycheck</span>}
           </div>
           <div className="mt-0.5 text-sm font-bold opacity-75">
@@ -169,7 +170,7 @@ function DebtCard({ debt, index, months, fromPaycheck, assets, onEdit, onPay }: 
             </div>
           )}
         </div>
-        <div className="text-right">
+        <div className="w-full sm:w-auto sm:text-right">
           <div className="num text-3xl font-black">{done ? "Paid off!" : money(debt.balance)}</div>
           {!done && (
             <div className="text-sm font-bold opacity-75">
@@ -187,7 +188,7 @@ function DebtCard({ debt, index, months, fromPaycheck, assets, onEdit, onPay }: 
         <div className="flex-1"><Meter value={share} color={done ? "mint" : "coral"} label="Paid off" /></div>
         <span className="num w-12 text-right text-sm font-black">{pct(share)}</span>
       </div>
-      <div className="mt-4 flex justify-end gap-2">
+      <div className="mt-4 flex flex-wrap justify-end gap-x-2 gap-y-3">
         <button className="btn-ghost text-sm" onClick={onEdit}><Icon name="edit" className="h-4 w-4" /> Edit</button>
         {!done && <Button small color="mint" onClick={onPay}><Icon name="cash" className="h-4 w-4" /> Record a payment</Button>}
       </div>
@@ -269,7 +270,7 @@ function DebtForm({ open, debt, onClose, onSaved }: { open: boolean; debt: Debt 
           <MoneyInput label="Starting balance" value={f.original_balance ?? ""} onChange={set("original_balance")}
             hint="What it was when you started paying it down." />
         </div>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-3 items-end gap-3">
           <TextInput label="APR %" type="number" step="0.01" min="0" inputMode="decimal" value={f.interest_rate ?? ""} onChange={set("interest_rate")} />
           <MoneyInput label="Monthly payment" value={f.minimum_payment ?? ""} onChange={set("minimum_payment")} />
           <TextInput label="Due day" type="number" min="1" max="31" value={f.due_day ?? ""} onChange={set("due_day")} />

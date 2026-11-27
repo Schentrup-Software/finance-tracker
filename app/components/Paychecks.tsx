@@ -70,7 +70,7 @@ export function Paychecks({ month, onAddIncome }: { month: string; onAddIncome?:
       ))}
 
       <SectionTitle action={
-        <div className="flex flex-wrap justify-end gap-2">
+        <div className="flex flex-wrap gap-x-2 gap-y-3 sm:justify-end">
           {onAddIncome && (
             <Button small color="butter" onClick={onAddIncome}><Icon name="plus" className="h-5 w-5" /> Income</Button>
           )}
@@ -236,7 +236,7 @@ function Breakdown({ paystubs, lines, earnerById, empty, detailed }: {
           <div className="text-sm font-extrabold uppercase tracking-wide opacity-75">Before it hits the bank</div>
           <div className="num text-3xl font-black">{money(gross)} <span className="text-lg opacity-60">gross</span></div>
         </div>
-        <div className="text-right">
+        <div className="sm:text-right">
           <div className="text-sm font-extrabold uppercase tracking-wide opacity-75">Take-home</div>
           <div className="num text-3xl font-black text-[#4c9a63]">{money(net)}</div>
         </div>
