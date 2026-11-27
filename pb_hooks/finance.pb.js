@@ -30,10 +30,14 @@ onRecordCreate((e) => {
 }, "users");
 
 // ---------- Household members (the head manages them) ----------
+//
+// Only from a signed-in session, never with an API token: adding a member or setting a
+// member's password makes a sign-in that would outlive revoking a leaked token.
 
 // POST /api/household/members  { "email", "password", "name" }
 routerAdd("POST", "/api/household/members", (e) => {
   const lib = require(`${__hooks}/finance/lib.js`);
+  lib.requireSession(e, "API tokens can't manage household members. Sign in to the app to do that.");
   const head = lib.requireHead(e.auth);
   const body = e.requestInfo().body || {};
   const user = new Record(e.app.findCollectionByNameOrId("users"));
@@ -54,6 +58,7 @@ routerAdd("POST", "/api/household/members", (e) => {
 // POST /api/household/members/{id}/password  { "password" }
 routerAdd("POST", "/api/household/members/{id}/password", (e) => {
   const lib = require(`${__hooks}/finance/lib.js`);
+  lib.requireSession(e, "API tokens can't manage household members. Sign in to the app to do that.");
   const head = lib.requireHead(e.auth);
   const user = lib.findMember(e.app, head, e.request.pathValue("id"));
   user.setPassword(String((e.requestInfo().body || {}).password || ""));
@@ -68,6 +73,7 @@ routerAdd("POST", "/api/household/members/{id}/password", (e) => {
 // DELETE /api/household/members/{id}: the member's sign-in goes away; the shared data stays.
 routerAdd("DELETE", "/api/household/members/{id}", (e) => {
   const lib = require(`${__hooks}/finance/lib.js`);
+  lib.requireSession(e, "API tokens can't manage household members. Sign in to the app to do that.");
   const head = lib.requireHead(e.auth);
   const user = lib.findMember(e.app, head, e.request.pathValue("id"));
   e.app.delete(user);
@@ -98,6 +104,20 @@ onRecordAuthRefreshRequest((e) => {
   require(`${__hooks}/finance/lib.js`).requireSession(e, "An API token can't be swapped for a sign-in. Use the token itself.");
   e.next();
 }, "users");
+
+// Nor can a token start an email change: confirming it would let whoever holds the token
+// reset the password and keep a sign-in after the token is revoked.
+onRecordRequestEmailChangeRequest((e) => {
+  require(`${__hooks}/finance/lib.js`).requireSession(e, "An API token can't change the account's email. Sign in to the app to do that.");
+  e.next();
+}, "users");
+
+// Realtime connections remember which token subscribed them, so revoking that token
+// closes them (see revokeApiToken). Otherwise a revoked token would keep receiving changes.
+onRealtimeSubscribeRequest((e) => {
+  e.client.set("apiTokenId", e.get("apiTokenId") || "");
+  e.next();
+});
 
 // GET /api/tokens -> { items: [ { id, name, prefix, created, last_used, user: { id, name, email } } ] }
 routerAdd("GET", "/api/tokens", (e) => {

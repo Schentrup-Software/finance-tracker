@@ -4,7 +4,8 @@
 #   - each user only sees and links their own records
 #   - debt payments move the debt balance
 #   - /api/sync/{collection} creates, then updates, by external_id
-#   - API tokens act as their member until revoked
+#   - API tokens act as their member until revoked, and can't mint sign-ins (members, email changes)
+#   - sign-ins are rate limited
 #   - SimpleFIN connections pull accounts, balances and transactions (against testing/fixtures/simplefin-mock.cjs)
 set -euo pipefail
 
@@ -30,6 +31,7 @@ token_for() {
 A="Authorization: $(token_for a)"
 OTHER="Authorization: $(token_for b)"
 
+check "sign-ins are rate limited" "$(j -H "Authorization: $ST" "$B/api/settings" | python3 -c 'import sys,json; r=json.load(sys.stdin)["rateLimits"]; print(r["enabled"], [(x["label"], x["maxRequests"], x["duration"]) for x in r["rules"] if x["label"] == "*:auth"])')" "True [('*:auth', 10, 60)]"
 check "public sign-up is closed" \
   "$(j -X POST "$B/api/collections/users/records" -d '{"email":"x@smoke.test","password":"password123","passwordConfirm":"password123"}' | field '["status"]')" "403"
 
@@ -326,7 +328,25 @@ check "tokens aren't readable through the collection API" "$(j -H "$A" "$B/api/c
 check "another household doesn't see my tokens" "$(j -H "$OTHER" "$B/api/tokens" | field '["items"]')" "[]"
 check "another household can't revoke my token" "$(j -H "$OTHER" -X DELETE "$B/api/tokens/$KEY_ID" | field '["status"]')" "404"
 check "another household's records stay hidden from my token" "$(j -H "$K" "$B/api/collections/envelopes/records" | python3 -c 'import sys,json; print(all(r["owner"] == sys.argv[1] for r in json.load(sys.stdin)["items"]))' "$(j -H "$A" "$B/api/collections/envelopes/records/$ENV" | field '["owner"]')")" "True"
+check "a token can't add household members" "$(j -H "$K" -X POST "$B/api/household/members" -d "{\"email\":\"tok-$RUN@smoke.test\",\"password\":\"password123\"}" | field '["status"]')" "403"
+check "a token can't set a member's password" "$(j -H "$K" -X POST "$B/api/household/members/anyone/password" -d '{"password":"password123"}' | field '["status"]')" "403"
+check "a token can't remove household members" "$(j -H "$K" -X DELETE "$B/api/household/members/anyone" | field '["status"]')" "403"
+check "a token can't change the account's email" "$(j -H "$K" -X POST "$B/api/collections/users/request-email-change" -d "{\"newEmail\":\"tok-$RUN@smoke.test\"}" | field '["status"]')" "403"
+# A realtime connection a token subscribed is closed when the token is revoked.
+TOK_RT=$(mktemp)
+curl -s -N --max-time 6 "$B/api/realtime" > "$TOK_RT" &
+TOK_RT_PID=$!
+for i in $(seq 1 20); do grep -q clientId "$TOK_RT" && break; sleep 0.1; done
+TOK_RT_CLIENT=$(grep -o '"clientId":"[^"]*"' "$TOK_RT" | cut -d'"' -f4)
+j -H "$K" -X POST "$B/api/realtime" -d "{\"clientId\":\"$TOK_RT_CLIENT\",\"subscriptions\":[\"envelopes\"]}" > /dev/null
+j -H "$A" -X POST "$B/api/collections/envelopes/records" -d '{"name":"Seen before revoking"}' > /dev/null
+sleep 0.3
 check "revoking a token" "$(j -H "$A" -X DELETE "$B/api/tokens/$KEY_ID" | field '["ok"]')" "True"
+j -H "$A" -X POST "$B/api/collections/envelopes/records" -d '{"name":"Made after revoking"}' > /dev/null
+wait $TOK_RT_PID || true
+check "a token's realtime gets changes until it's revoked" "$(grep -c 'Seen before revoking' "$TOK_RT")" "1"
+check "and nothing after" "$(grep -c 'Made after revoking' "$TOK_RT" || true)" "0"
+rm -f "$TOK_RT"
 check "a revoked token gets 401" "$(j -H "$K" "$B/api/collections/envelopes/records" | field '["status"]')" "401"
 check "a made-up token gets 401" "$(j -H "Authorization: ft_nope" "$B/api/sync/transactions" -X POST -d '{"records":[]}' | field '["status"]')" "401"
 
