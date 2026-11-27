@@ -29,9 +29,14 @@ export default function Login() {
     setError(null);
     setBusy(true);
     try {
-      if (mode === "setup") await signUp(email.trim(), password);
-      else await signIn(email.trim(), password);
-      navigate("/budget", { replace: true });
+      if (mode === "setup") {
+        await signUp(email.trim(), password);
+        // A new household starts by connecting its banks (or skipping that).
+        navigate("/accounts?welcome=1", { replace: true });
+      } else {
+        await signIn(email.trim(), password);
+        navigate("/budget", { replace: true });
+      }
     } catch (err: any) {
       setError(err?.status === 400 && mode === "signin" ? "That email and password don't match." : errorMessage(err));
     } finally {

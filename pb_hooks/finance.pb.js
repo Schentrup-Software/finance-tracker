@@ -359,3 +359,37 @@ routerAdd("POST", "/api/import/budgets", (e) => {
   const body = e.requestInfo().body || {};
   return e.json(200, lib.importBudgets(e.app, lib.householdOf(e.auth), body.months));
 }, $apis.requireAuth("users"), $apis.bodyLimit(5 << 20));
+
+// ---------- SimpleFIN Bridge (bank balances and transactions) ----------
+
+// Every hour at this instance's own minute (random, kept in pb_data), pull each
+// connection whose morning it is. Instances spread over the hour, off the top of it.
+cronAdd("simplefin_pull", require(`${__hooks}/finance/lib.js`).simplefinMinute($app) + " * * * *", () => {
+  require(`${__hooks}/finance/lib.js`).runDueSimplefin($app);
+});
+
+// GET /api/simplefin -> { minute }: the minute past the hour this instance pulls at.
+routerAdd("GET", "/api/simplefin", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  return e.json(200, { minute: lib.simplefinMinute(e.app) });
+}, $apis.requireAuth("users"));
+
+// POST /api/simplefin/connect  { "setup_token", "sync_hour_utc" } -> { id, pulled, error }
+routerAdd("POST", "/api/simplefin/connect", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  const body = e.requestInfo().body || {};
+  return e.json(200, lib.connectSimplefin(e.app, lib.householdOf(e.auth), body.setup_token, body.sync_hour_utc));
+}, $apis.requireAuth("users"));
+
+// POST /api/simplefin/{id}/sync -> { accounts, transactions, payments, warnings }
+routerAdd("POST", "/api/simplefin/{id}/sync", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  return e.json(200, lib.syncSimplefinNow(e.app, lib.householdOf(e.auth), e.request.pathValue("id")));
+}, $apis.requireAuth("users"));
+
+// DELETE /api/simplefin/{id}: forget the connection and its account list. What it brought in stays.
+routerAdd("DELETE", "/api/simplefin/{id}", (e) => {
+  const lib = require(`${__hooks}/finance/lib.js`);
+  lib.disconnectSimplefin(e.app, lib.householdOf(e.auth), e.request.pathValue("id"));
+  return e.json(200, { ok: true });
+}, $apis.requireAuth("users"));

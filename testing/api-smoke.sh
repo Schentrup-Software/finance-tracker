@@ -5,6 +5,7 @@
 #   - debt payments move the debt balance
 #   - /api/sync/{collection} creates, then updates, by external_id
 #   - API tokens act as their member until revoked
+#   - SimpleFIN connections pull accounts, balances and transactions (against testing/fixtures/simplefin-mock.cjs)
 set -euo pipefail
 
 B="${PB_URL:-http://localhost:8090}"
@@ -281,6 +282,53 @@ check "another household's records stay hidden from my token" "$(j -H "$K" "$B/a
 check "revoking a token" "$(j -H "$A" -X DELETE "$B/api/tokens/$KEY_ID" | field '["ok"]')" "True"
 check "a revoked token gets 401" "$(j -H "$K" "$B/api/collections/envelopes/records" | field '["status"]')" "401"
 check "a made-up token gets 401" "$(j -H "Authorization: ft_nope" "$B/api/sync/transactions" -X POST -d '{"records":[]}' | field '["status"]')" "401"
+
+# SimpleFIN: a stand-in Bridge on :8091 (started here if it isn't running)
+SF="http://localhost:8091"
+if ! curl -sf "$SF/token" > /dev/null 2>&1; then
+  node "$(dirname "$0")/fixtures/simplefin-mock.cjs" > /tmp/simplefin-mock.log 2>&1 &
+  MOCK_PID=$!
+  trap 'kill $MOCK_PID 2>/dev/null || true' EXIT
+  for i in $(seq 1 20); do curl -sf "$SF/token" > /dev/null 2>&1 && break; sleep 0.2; done
+fi
+SFTOKEN=$(curl -s "$SF/token")
+check "a setup token that isn't one is refused" "$(j -H "$A" -X POST "$B/api/simplefin/connect" -d '{"setup_token":"hello"}' | field '["status"]')" "400"
+CONN=$(j -H "$A" -X POST "$B/api/simplefin/connect" -d "{\"setup_token\":\"$SFTOKEN\",\"sync_hour_utc\":11}" | field '["id"]')
+check "a used setup token is refused" "$(j -H "$A" -X POST "$B/api/simplefin/connect" -d "{\"setup_token\":\"$SFTOKEN\"}" | field '["status"]')" "400"
+check "connecting lists the bank's accounts" "$(j -H "$A" "$B/api/collections/simplefin_accounts/records?sort=name" | python3 -c 'import sys,json; print([a["name"] for a in json.load(sys.stdin)["items"]])')" "['Everyday Checking', 'High Yield Savings', 'Home Mortgage', 'Sunshine Visa']"
+check "the connection is named for its bank" "$(j -H "$A" "$B/api/collections/simplefin_connections/records/$CONN" | field '["label"]')" "Sunshine Bank"
+check "the access URL never leaves the server" "$(j -H "$A" "$B/api/collections/simplefin_connections/records/$CONN" | python3 -c 'import sys,json; print("access_url" in json.load(sys.stdin))')" "False"
+check "another household doesn't see the connection" "$(j -H "$OTHER" "$B/api/collections/simplefin_accounts/records" | field '["totalItems"]')" "0"
+check "another household can't pull it" "$(j -H "$OTHER" -X POST "$B/api/simplefin/$CONN/sync" | field '["status"]')" "404"
+check "another household can't disconnect it" "$(j -H "$OTHER" -X DELETE "$B/api/simplefin/$CONN" | field '["status"]')" "404"
+check "connections can't be made through the collection API" "$(j -H "$A" -X POST "$B/api/collections/simplefin_connections/records" -d '{"access_url":"https://u:p@x/simplefin"}' | field '["status"]')" "403"
+sfacct() { curl -s -G -H "$A" "$B/api/collections/simplefin_accounts/records" --data-urlencode "filter=name='$1'" | field '["items"][0]["id"]'; }
+SF_CHK=$(sfacct "Everyday Checking"); SF_VISA=$(sfacct "Sunshine Visa"); SF_MTG=$(sfacct "Home Mortgage"); SF_SAV=$(sfacct "High Yield Savings")
+CHK=$(j -H "$A" -X POST "$B/api/collections/assets/records" -d '{"name":"SF Checking","type":"checking"}' | field '["id"]')
+SVISA=$(j -H "$A" -X POST "$B/api/collections/debts/records" -d '{"name":"SF Visa","type":"credit_card"}' | field '["id"]')
+MTG=$(j -H "$A" -X POST "$B/api/collections/debts/records" -d '{"name":"SF Mortgage","type":"mortgage"}' | field '["id"]')
+OTHER_ASSET=$(j -H "$OTHER" -X POST "$B/api/collections/assets/records" -d '{"name":"Theirs","type":"checking"}' | field '["id"]')
+j -H "$A" -X POST "$B/api/collections/earners/records" -d '{"name":"SF Earner","employer":"Acme Corp"}' > /dev/null
+check "an account can't fill another household's asset" "$(j -H "$A" -X PATCH "$B/api/collections/simplefin_accounts/records/$SF_CHK" -d "{\"use\":\"spending\",\"asset\":\"$OTHER_ASSET\"}" | field '["status"]')" "404"
+check "the bank's balance can't be changed by hand" "$(j -H "$A" -X PATCH "$B/api/collections/simplefin_accounts/records/$SF_CHK" -d '{"balance":1}' | field '["status"]')" "404"
+FROM="$(date -u -d '-30 days' +%Y-%m-%d) 12:00:00.000Z"
+j -H "$A" -X PATCH "$B/api/collections/simplefin_accounts/records/$SF_CHK" -d "{\"use\":\"spending\",\"asset\":\"$CHK\",\"sync_from\":\"$FROM\"}" > /dev/null
+j -H "$A" -X PATCH "$B/api/collections/simplefin_accounts/records/$SF_VISA" -d "{\"use\":\"spending\",\"debt\":\"$SVISA\",\"sync_from\":\"$FROM\"}" > /dev/null
+j -H "$A" -X PATCH "$B/api/collections/simplefin_accounts/records/$SF_MTG" -d "{\"use\":\"balance\",\"debt\":\"$MTG\"}" > /dev/null
+j -H "$A" -X PATCH "$B/api/collections/simplefin_accounts/records/$SF_SAV" -d '{"use":"ignore"}' > /dev/null
+check "a pull brings in posted transactions and the card payment" "$(j -H "$A" -X POST "$B/api/simplefin/$CONN/sync" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["transactions"], d["payments"])')" "4 1"
+check "pulling again adds nothing" "$(j -H "$A" -X POST "$B/api/simplefin/$CONN/sync" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["transactions"], d["payments"])')" "0 0"
+check "the card payment came from checking, so it isn't spending too" "$(j -H "$A" "$B/api/collections/debt_payments/records?filter=(debt='$SVISA')" | python3 -c 'import sys,json; print([(p["amount"], p["from_asset"] == sys.argv[1]) for p in json.load(sys.stdin)["items"]])' "$CHK")" "[(400, True)]"
+check "the paycheck is matched to its earner by employer" "$(j -H "$A" "$B/api/collections/transactions/records?filter=(account_asset='$CHK'%26%26kind='income')" | python3 -c 'import sys,json; print([(t["amount"], bool(t["earner"]), t["paystub_status"]) for t in json.load(sys.stdin)["items"]])')" "[(2104.33, True, 'needs_paystub')]"
+check "checking spending lands in checking" "$(j -H "$A" "$B/api/collections/transactions/records?filter=(account_asset='$CHK'%26%26kind='expense')" | python3 -c 'import sys,json; print([t["payee"] for t in json.load(sys.stdin)["items"]])')" "['Publix']"
+check "the card's balance is what the bank says" "$(j -H "$A" "$B/api/collections/debts/records/$SVISA" | field '["balance"]')" "612.4"
+check "the mortgage's balance is what the bank says" "$(j -H "$A" "$B/api/collections/debts/records/$MTG" | field '["balance"]')" "245000"
+check "checking's value is what the bank says" "$(j -H "$A" "$B/api/collections/assets/records/$CHK" | field '["value"]')" "2450.1"
+check "the next pull starts a few days before the last" "$(curl -s "$SF/requests" | python3 -c 'import sys,json,time; r=[q for q in json.load(sys.stdin) if "start-date" in q][-1]; print(round((time.time()-int(r["start-date"]))/86400) in (5,6))')" "True"
+check "the hourly check's minute is off the top of the hour" "$(j -H "$A" "$B/api/simplefin" | python3 -c 'import sys,json; m=json.load(sys.stdin)["minute"]; print(4 <= m <= 56 and abs(m-30) > 3)')" "True"
+check "disconnecting" "$(j -H "$A" -X DELETE "$B/api/simplefin/$CONN" | field '["ok"]')" "True"
+check "what it brought in stays" "$(j -H "$A" "$B/api/collections/transactions/records?filter=(account_asset='$CHK')" | field '["totalItems"]')" "2"
+check "its account list goes" "$(j -H "$A" "$B/api/collections/simplefin_accounts/records" | field '["totalItems"]')" "0"
 
 echo
 [ "$FAILS" -eq 0 ] && echo "All API checks passed." || { echo "$FAILS check(s) failed."; exit 1; }

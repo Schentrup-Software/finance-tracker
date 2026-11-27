@@ -2,8 +2,8 @@
 
 import pb, { POCKETBASE_URL } from "./pocketbaseClient";
 import type {
-  Allocation, Asset, BaseRecord, Budget, Debt, DebtPayment, Draft, Earner, Envelope, Paystub, PaystubLine, TaxDocument,
-  TaxYear, Transaction, Vendor,
+  Allocation, Asset, BaseRecord, Budget, Debt, DebtPayment, Draft, Earner, Envelope, Paystub, PaystubLine, SimplefinAccount,
+  SimplefinConnection, TaxDocument, TaxYear, Transaction, Vendor,
 } from "./types";
 import { monthRange } from "~/lib/dates";
 
@@ -72,7 +72,8 @@ type Name =
   | "envelopes" | "budgets" | "allocations" | "transactions"
   | "debts" | "debt_payments" | "assets"
   | "earners" | "paystubs" | "paystub_lines"
-  | "vendors" | "tax_documents" | "tax_years";
+  | "vendors" | "tax_documents" | "tax_years"
+  | "simplefin_connections" | "simplefin_accounts";
 
 function list<T>(name: Name, options: { filter?: string; sort?: string } = {}) {
   return pb.collection(name).getFullList<T>({ batch: 500, ...options });
@@ -522,6 +523,46 @@ export async function listPayrollDebtIds(): Promise<Set<string>> {
 }
 
 /** Turns a PocketBase error into one readable sentence. */
+// ---------- SimpleFIN Bridge ----------
+
+export const listSimplefinConnections = () => list<SimplefinConnection>("simplefin_connections", { sort: "created" });
+export const listSimplefinAccounts = () => list<SimplefinAccount>("simplefin_accounts", { sort: "org,name" });
+
+/** What people may change on a SimpleFIN account: what it's for and what it fills. */
+export type SimplefinAccountChoice = Partial<Pick<SimplefinAccount, "use" | "asset" | "debt" | "sync_from">>;
+
+export function updateSimplefinAccount(id: string, data: SimplefinAccountChoice) {
+  return pb.collection("simplefin_accounts").update<SimplefinAccount>(id, data);
+}
+
+/** The minute past the hour this server pulls at. */
+export async function simplefinMinute(): Promise<number> {
+  const res = await pb.send<{ minute: number }>("/api/simplefin", { method: "GET" });
+  return res.minute;
+}
+
+export interface SimplefinPull {
+  accounts: number;
+  transactions: number;
+  payments: number;
+  warnings: string[];
+}
+
+/** Claims a setup token and pulls the list of accounts. `error` is set when the first pull failed. */
+export function connectSimplefin(setupToken: string, syncHourUtc: number) {
+  return pb.send<{ id: string; pulled: SimplefinPull | null; error: string }>("/api/simplefin/connect", {
+    method: "POST", body: { setup_token: setupToken, sync_hour_utc: syncHourUtc },
+  });
+}
+
+export function pullSimplefin(id: string) {
+  return pb.send<SimplefinPull>(`/api/simplefin/${id}/sync`, { method: "POST" });
+}
+
+export function disconnectSimplefin(id: string) {
+  return pb.send(`/api/simplefin/${id}`, { method: "DELETE" });
+}
+
 export function errorMessage(err: unknown): string {
   const e = err as any;
   const fields = e?.response?.data;
