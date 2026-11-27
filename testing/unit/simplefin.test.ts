@@ -185,6 +185,33 @@ describe("choosing accounts in the app", () => {
     expect(guessKind("Guideline 401(k)", 5000)).toBe("401k");
     expect(guessKind("High Yield Savings", 10)).toBe("savings");
     expect(guessKind("Account ...1234", -50)).toBe("credit_card");
+  });
+
+  it("treats mortgages and other loans as balance only, not budget transactions", () => {
+    const loans: [string, number, string, string][] = [
+      ["Home Mortgage", -245000, "Sunshine Bank", "mortgage"],
+      ["Mortgage ...4471", -180000, "Chase", "mortgage"],
+      ["Escrow and principal", -150000, "", "mortgage"],
+      ["Loan ...0042", -12000, "Navy Federal", "personal"],
+      ["Account ...9921", -210000, "Mr. Cooper", "mortgage"],
+      ["Account ...1100", -14000, "Rocket Mortgage", "mortgage"],
+      ["Direct Loans", -23000, "Nelnet", "personal"], // "loans" in the name says loan; still balance only
+      ["Account ...5012", -23000, "Aidvantage", "student"],
+      ["Account ...7300", -18000, "Toyota Financial Services", "auto"],
+      ["Vehicle ...7300", -18000, "Bank", "auto"],
+      ["HELOC", -40000, "Bank", "heloc"],
+      ["Account ...3333", -320000, "Some Bank", "mortgage"], // owes too much to be a card
+      ["Account ...4444", -30000, "Some Bank", "personal"],
+    ];
+    for (const [name, balance, org, kind] of loans) {
+      expect(guessKind(name, balance, org), name).toBe(kind);
+      expect(defaultUse(guessKind(name, balance, org)), name).toBe("balance");
+    }
+    // Cards and checking still bring in transactions, even at a lender's bank.
+    expect(guessKind("Freedom Unlimited", -1200, "Chase")).toBe("credit_card");
+    expect(guessKind("Account ...8888", -900, "Some Bank")).toBe("credit_card");
+    expect(guessKind("Account ...8888", 900, "Toyota Financial Services")).toBe("checking");
+    expect(defaultUse(guessKind("Account ...8888", -900, "Some Bank"))).toBe("spending");
     expect(defaultUse("checking")).toBe("spending");
     expect(defaultUse("credit_card")).toBe("spending");
     expect(defaultUse("mortgage")).toBe("balance");

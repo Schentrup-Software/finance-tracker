@@ -39,7 +39,7 @@ interface Choice {
 const firstOfMonth = () => `${todayISO().slice(0, 7)}-01`;
 
 function initialChoice(a: SimplefinAccount, assets: Asset[], debts: Debt[]): Choice {
-  const kind = guessKind(a.name, a.balance);
+  const kind = guessKind(a.name, a.balance, a.org);
   const side = kindOption(kind).side;
   const same = (n: string) => n.trim().toLowerCase() === a.name.trim().toLowerCase();
   const byName = side === "asset" ? assets.find((x) => same(x.name)) : debts.find((x) => same(x.name));

@@ -36,11 +36,11 @@ export const ACCOUNT_KIND_OPTIONS: AccountKindOption[] = [
 export const kindOption = (value: string) => ACCOUNT_KIND_OPTIONS.find((k) => k.value === value) ?? ACCOUNT_KIND_OPTIONS[0];
 
 const HINTS: [RegExp, string][] = [
-  [/mortgage|home loan|\bmtg\b/i, "mortgage"],
+  [/mortgage|home loan|\bmtg\b|\bescrow\b/i, "mortgage"],
   [/heloc|home equity/i, "heloc"],
-  [/\bauto\b|car loan|vehicle/i, "auto"],
+  [/\bauto\b|car loan|vehicle|\blease\b/i, "auto"],
   [/student/i, "student"],
-  [/\bloan\b|line of credit/i, "personal"],
+  [/\bloans?\b|line of credit|\bloc\b|installment|personal credit/i, "personal"],
   [/credit|card|visa|master\s*card|\bamex\b|american express|discover|sapphire|freedom|quicksilver|venture/i, "credit_card"],
   [/roth\s*ira/i, "roth_ira"],
   [/401\s*\(?k\)?|403\s*\(?b\)?|retirement|\btsp\b/i, "401k"],
@@ -53,10 +53,32 @@ const HINTS: [RegExp, string][] = [
   [/cash|wallet/i, "cash"],
 ];
 
-/** A first guess at what an account is, from its name and the sign of its balance. */
-export function guessKind(name: string, balance: number): string {
+// Lenders whose accounts are loans, when the account's own name doesn't say (e.g. "Account ...1234").
+const LENDERS: [RegExp, string][] = [
+  [/mortgage|home ?loans?|mr\.? ?cooper|rocket|pennymac|loancare|newrez|shellpoint|nationstar|cenlar|dovenmuehle|roundpoint|lakeview|guild|flagstar|freedom mortgage|united wholesale/i, "mortgage"],
+  [/nelnet|navient|mohela|aidvantage|great lakes|edfinancial|sallie ?mae|fedloan|earnest|sofi lending|student/i, "student"],
+  [/auto|motor|financial services|toyota|honda|ford credit|gm financial|santander consumer|westlake|carvana|exeter|tesla|car ?max/i, "auto"],
+  [/lending ?club|prosper|upstart|best ?egg|lightstream|avant|marcus|oportun|\bloans?\b|lending/i, "personal"],
+];
+
+// Cards rarely owe this much; a bigger balance owed is a loan (and a very big one, a mortgage).
+const LOAN_OWED = 25000;
+const MORTGAGE_OWED = 100000;
+
+/**
+ * A first guess at what an account is. In order: what its name says ("Home Mortgage", "Visa",
+ * "Savings"); then its bank, when that is a mortgage, student loan or car lender; then how much
+ * it owes, so a large balance owed with an unhelpful name is a loan, not a card.
+ */
+export function guessKind(name: string, balance: number, org = ""): string {
   const byName = HINTS.find(([re]) => re.test(name))?.[1];
   if (byName) return byName;
+  if (balance <= 0) {
+    const byLender = LENDERS.find(([re]) => re.test(org))?.[1];
+    if (byLender) return byLender;
+    if (-balance >= MORTGAGE_OWED) return "mortgage";
+    if (-balance >= LOAN_OWED) return "personal";
+  }
   return balance < 0 ? "credit_card" : "checking";
 }
 
@@ -84,7 +106,7 @@ export function suggestMatch<T extends { id: string; name: string; org: string; 
     const have = new Set(words(`${a.name} ${a.org}`));
     const common = want.filter((w) => have.has(w)).length;
     if (common === 0) continue;
-    const score = common / want.length + (guessKind(a.name, a.balance) === importKind ? 0.25 : 0);
+    const score = common / want.length + (guessKind(a.name, a.balance, a.org) === importKind ? 0.25 : 0);
     if (score > bestScore) { best = a; bestScore = score; tied = false; }
     else if (score === bestScore) tied = true;
   }
