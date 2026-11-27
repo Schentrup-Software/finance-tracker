@@ -33,7 +33,7 @@ test("first visit creates the account, then sign-up closes", async ({ page, requ
 
   // A new household is offered SimpleFIN first, and can skip it.
   await expect(page).toHaveURL(/\/accounts\?welcome=1/);
-  await expect(page.getByRole("heading", { name: "Welcome! Step 1: connect your banks" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Welcome! Connect your banks" })).toBeVisible();
   await expect(page.getByLabel("Setup token")).toBeVisible();
   await shot(page, "02-connect-banks");
   // Until it's connected or skipped, the app keeps coming back to it.
@@ -381,6 +381,7 @@ test("import history from a spreadsheet, with annual envelopes", async ({ page }
   await expect.poll(names).toEqual(reordered);
   await page.getByRole("button", { name: "Done" }).click();
   await shot(page, "10-reordered");
+  await page.waitForLoadState("networkidle"); // the order's writes have landed
   await page.reload();
   await expect.poll(names).toEqual(reordered);
 
@@ -639,19 +640,24 @@ test("onboarding: SimpleFIN first, its transactions wait for the end of setup", 
     const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
     await expect(page.getByLabel("Everyday Checking transactions from")).toHaveValue(iso);
     await page.getByRole("button", { name: "Save 4 accounts", exact: true }).click();
-    await expect(page.getByText(/Saved\. Transactions start coming in when you finish setup/)).toBeVisible();
+    await expect(page.getByText(/Saved\. Transactions start coming in once you start your budget/)).toBeVisible();
     await shot(page, "19-onboarding-saved");
 
     await page.getByRole("button", { name: "Next: the budget and history import" }).click();
-    await expect(page.getByRole("heading", { name: "Step 2: bring in your history" })).toBeVisible();
-    await shot(page, "20-onboarding-step-2");
-    await page.getByRole("button", { name: "Finish without importing" }).click();
+    // No onboarding banner on the budget page: starting the budget is the end of setup.
+    await expect(page.getByText("bring in your history")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Finish without importing" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Start budget" }).click();
     const ask = page.getByRole("dialog", { name: "Start from the 1st?" });
     await expect(ask).toBeVisible();
-    await shot(page, "21-start-from-the-1st");
+    await shot(page, "20-start-from-the-1st");
     await ask.getByRole("button", { name: /^From / }).last().click();
-    await expect(page.getByText(/Setup is done\. SimpleFIN brought in \d+ transactions?/)).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Step 2: bring in your history" })).toHaveCount(0);
+    await expect(page.getByText(/SimpleFIN brought in \d+ transactions?/)).toBeVisible();
+    await expect(ask).toHaveCount(0);
+    // Setup is over: the connection is no longer held, so it can be pulled by hand.
+    await page.goto("/accounts");
+    await expect(page.getByText("Balances only for now")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Pull now" })).toBeVisible();
   } finally {
     mock.kill();
   }

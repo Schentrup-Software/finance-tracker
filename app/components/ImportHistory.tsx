@@ -244,7 +244,7 @@ export function ImportHistory({ open, onClose, onDone }: { open: boolean; onClos
         setProgress("Pulling new transactions from SimpleFIN…");
         let pulled = 0;
         if (held.size) {
-          // Onboarding: the import was step 2, so setup is done. SimpleFIN starts after the file's last day.
+          // Onboarding: importing history ends setup. SimpleFIN starts after the file's last day.
           const r = await finishSimplefinSetup();
           finished = true;
           pulled += r.transactions;

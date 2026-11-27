@@ -376,10 +376,11 @@ n8n doesn't need to do anything for this; these endpoints are what the app uses.
 | `DELETE` | `/api/simplefin/{id}` | | Forgets the connection and its account list. Transactions, payments, assets and debts it made stay |
 
 Onboarding: step 1 connects SimpleFIN with `hold: true` and saves what each account is for, with
-transactions starting today. A held connection's pulls refresh balances only. Step 2 is the history
-import: when it finishes it calls `/api/simplefin/finish`, so SimpleFIN picks up the day after the
-spreadsheet ends and nothing comes in twice. Skipping the import finishes setup too, and offers to
-start from the 1st of the month instead of today.
+transactions starting today. A held connection's pulls refresh balances only. Setup ends on the
+budget page, either way it is started: the history import calls `/api/simplefin/finish` when it is
+done, so SimpleFIN picks up the day after the spreadsheet ends and nothing comes in twice; "Start
+budget" calls it too, first offering to start from the 1st of the month instead of today when no
+history was imported.
 
 How a pull works:
 
